@@ -3,7 +3,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from app.database import admin_crud as req
 
-router = Router()
+router1 = Router()
 
 
 async def is_admin(username):
@@ -11,16 +11,17 @@ async def is_admin(username):
     return x
 
 
-@router.message(Command('all_admins'))
+@router1.message(Command('all_admins'))
 async def all_admins(message: Message):
     if message.chat.type != 'private':
         return
-    if is_admin(message.from_user.username):
+    a = await is_admin(message.from_user.username)
+    if a[0]:
         admins = await req.all_admins()
         await message.answer('Список администраторов\n'+'\n'.join(admins[0]))
 
 
-@router.message(Command('delete_admin'))  # формат сообщения /delete_admin @user
+@router1.message(Command('delete_admin'))  # формат сообщения /delete_admin @user
 async def delete_admin(message: Message):
     if message.chat.type != 'private':
         return
@@ -42,7 +43,7 @@ async def delete_admin(message: Message):
         await message.answer('Ошибка в формате сообщения')
 
 
-@router.message(Command('set_admin'))  # сообщение формата /set_admin @username
+@router1.message(Command('set_admin'))  # сообщение формата /set_admin @username
 async def set_admin(message: Message):
     if message.chat.type != 'private':
         return

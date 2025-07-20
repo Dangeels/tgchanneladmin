@@ -7,6 +7,7 @@ from aiogram.filters import Command, CommandStart
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import app.handlers as handlers
+from app.handlers.admin_handlers import router1
 from app.handlers.handlers import router
 from app.database.models import async_main
 from dotenv import load_dotenv
@@ -44,7 +45,7 @@ async def on_shutdown(dispatcher):
 async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    dp.include_router(router)
+    dp.include_routers(router, router1)
     await async_main()
     await dp.start_polling(bot)
 
