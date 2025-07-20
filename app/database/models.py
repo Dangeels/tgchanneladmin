@@ -23,7 +23,7 @@ class PendingPost(Base):
     content_type: Mapped[str] = mapped_column()
     text: Mapped[str] = mapped_column()
     photo_file_ids = mapped_column(JSON, default=list)
-    media_group_id: Mapped[int] = mapped_column(unique=True)
+    media_group_id: Mapped[int] = mapped_column()
 
 
 class ScheduledPost(Base):
@@ -34,7 +34,7 @@ class ScheduledPost(Base):
     photo_file_ids = mapped_column(JSON, default=list)
     scheduled_time = mapped_column(DateTime)
     pin_duration_minutes: Mapped[int] = mapped_column()
-    media_group_id: Mapped[int] = mapped_column(unique=True)
+    media_group_id: Mapped[int] = mapped_column()
 
 class Admin(Base):
     __tablename__ = 'admins'

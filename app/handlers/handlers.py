@@ -4,7 +4,7 @@ from aiogram import Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message
+from aiogram.types import Message, InputMediaPhoto
 import app.database.requests as req
 from datetime import datetime, timedelta
 from app.handlers.admin_handlers import is_admin
@@ -38,9 +38,15 @@ async def all_pending_posts(message: Message):
         return
     posts = await req.get_pending_posts()
     for post in posts:
-        await message.answer(text=str(post.id))
-        if post.photo_file_id:
-            await message.answer_photo(photo=post.photo_file_id, caption=post.text)
+        await message.answer(text=f'id поста: {post.id}')
+        if post.photo_file_ids:
+            if len(post.photo_file_ids) == 1:
+                await message.answer_photo(post.photo_file_ids[0], caption=post.text)
+            else:
+                media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
+                if post.text:
+                    media[0].caption = post.text  # Caption только для первого
+                await message.answer_media_group(media=media)
         else:
             await message.answer(text=post.text)
 
@@ -65,9 +71,17 @@ async def all_scheduled_posts(message: Message):
         return
     posts = await req.get_scheduled_posts()
     for post in posts:
-        await message.answer(text=str(post.id))
-        if post.photo_file_id:
-            await message.answer_photo(photo=post.photo_file_id, caption=post.text)
+        await message.answer(text=f'id поста: {post.id}.\n'
+                                  f'Запланированное время публикации поста: {post.scheduled_time}\n'
+                                  f'Продолжительность нахождения поста в закреплённых в минутах: {post.pin_duration_minutes}')
+        if post.photo_file_ids:
+            if len(post.photo_file_ids) == 1:
+                await message.answer_photo(post.photo_file_ids[0], caption=post.text)
+            else:
+                media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
+                if post.text:
+                    media[0].caption = post.text  # Caption только для первого
+                await message.answer_media_group(media=media)
         else:
             await message.answer(text=post.text)
 
@@ -93,7 +107,7 @@ class PendingState(StatesGroup):
 async def store_pending_post(message: Message, state: FSMContext):
     x = await is_admin(message.from_user.username)
     if x[0]:
-        await message.answer("Отправьте контент (текст или фото).")
+        await message.answer("Отправьте контент поста (текст и фото, при наличии).")
         await state.set_state(PendingState.content)
 
 
@@ -137,7 +151,7 @@ class ScheduleState(StatesGroup):
 async def start_schedule(message: Message, state: FSMContext):
     x = await is_admin(message.from_user.username)
     if x[0]:
-        await message.answer("Отправьте контент (текст или фото).")
+        await message.answer("Отправьте контент поста (текст и фото, при наличии).")
         await state.set_state(ScheduleState.content)
 
 
@@ -187,14 +201,14 @@ async def get_time(message: Message, state: FSMContext):
     try:
         scheduled_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
         if scheduled_time_moscow < datetime.now():
-            await message.answer("Время публикации должно быть корректным")
+            await message.reply("Время публикации должно быть корректным")
             return
         await state.update_data(scheduled_time_moscow=scheduled_time_moscow)
         await message.answer(
-            "Отправьте дату и время, до которой нужно закрепить пост\n/stop если пост не нужно закреплять")
+            "Отправьте дату и время, до которых нужно закрепить пост\n/stop если пост не нужно закреплять")
         await state.set_state(ScheduleState.unpin_time)
     except ValueError:
-        await message.answer("Неверный формат времени. Используйте HH:MM DD-MM-YYYY.")
+        await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY.")
 
 
 @router.message(ScheduleState.unpin_time)
@@ -206,7 +220,7 @@ async def get_unpin_time(message: Message, state: FSMContext):
         else:
             unpin_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
             if unpin_time_moscow <= data['scheduled_time_moscow']:
-                await message.answer("Время открепления должно быть позже времени публикации.")
+                await message.reply("Время открепления должно быть позже времени публикации.")
                 return
             unpin_time_moscow -= data['scheduled_time_moscow']
             unpin_time_moscow = unpin_time_moscow.days*24*60*60+unpin_time_moscow.seconds
@@ -220,6 +234,5 @@ async def get_unpin_time(message: Message, state: FSMContext):
         )
         await message.answer("Пост успешно запланирован.")
     except ValueError:
-        await message.answer("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /stop.")
-    finally:
-        await state.clear()
+        await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /stop.")
+    await state.clear()

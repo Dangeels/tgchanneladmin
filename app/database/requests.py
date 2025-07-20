@@ -38,7 +38,8 @@ async def add_or_update_pending_post(content_type: str, text: str, photo_file_id
             # Проверяем существование с lock (with_for_update)
             existing = await session.scalar(
                 select(PendingPost)
-                .where(PendingPost.media_group_id == post.media_group_id)
+                .where(PendingPost.media_group_id == post.media_group_id,
+                       PendingPost.media_group_id != 0)
                 .with_for_update()
             )
             if existing:
@@ -74,7 +75,7 @@ async def add_scheduled_post(content_type: str, text: str, photo_file_ids: list[
         photo_file_ids=photo_file_ids,
         scheduled_time=scheduled_time,
         pin_duration_minutes=pin_duration_minutes,
-        media_group_id=media_group_id if media_group_id else None
+        media_group_id=media_group_id if media_group_id else 0
     )
 
     async with async_session() as session:
@@ -82,7 +83,8 @@ async def add_scheduled_post(content_type: str, text: str, photo_file_ids: list[
             # Проверяем существование (upsert)
             existing = await session.scalar(
                 select(ScheduledPost)
-                .where(ScheduledPost.media_group_id == post.media_group_id)
+                .where(ScheduledPost.media_group_id == post.media_group_id,
+                       ScheduledPost.media_group_id != 0)
                 .with_for_update()  # Lock для concurrency
             )
             if existing:
