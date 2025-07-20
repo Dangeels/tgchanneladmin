@@ -57,8 +57,8 @@ async def scheduler_task(bot: Bot, channel_id: int):
 
     # Проверка низкой активности
     if 0 <= now.hour < 24:
-        if last_message_time is None or (now - last_message_time) > timedelta(minutes=2):
-            delay = random.randint(6, 36)  # Задержка 1–60 минут
+        if last_message_time is None or (now - last_message_time) > timedelta(hours=2):
+            delay = random.randint(60, 3600)  # Задержка 1–60 минут
             await asyncio.sleep(delay)
             pending_posts = await get_pending_posts()
             if pending_posts:

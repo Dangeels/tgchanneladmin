@@ -13,9 +13,22 @@ import pytz
 router = Router()
 
 
-@router.message(Command('help'))
-async def help(message: Message):
-    pass
+@router.message(Command("help"))
+async def help_command(message: Message):
+    help_text = """
+**Помощь по боту для администрирования Telegram-канала**
+Этот бот помогает управлять постами в канале: добавлять в очередь, планировать публикации и т.д. Доступны только для администраторов.
+**Доступные команды:**
+- **/pending**: Добавить пост в очередь на публикацию.
+- **/schedule**: Добавить пост и запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
+- **/all_pending_posts: Показать все посты в очереди на публикацию
+- **/all_scheduled_posts: Показать все посты с определённым временем публикации
+- **/delete_pending_post id: Удалить определённый пост из очереди по id поста
+- **/delete_scheduled_post id: Удалить определённый пост с назначенным временем публикации по id поста
+- **/help**: Показать эту справку.
+    """
+
+    await message.answer(help_text, parse_mode="Markdown")
 
 
 @router.message(Command('all_pending_posts'))
