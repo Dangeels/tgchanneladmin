@@ -28,7 +28,7 @@ async def help_command(message: Message):
 - **/help**: Показать эту справку.
     """
 
-    await message.answer(help_text, parse_mode="Markdown")
+    await message.answer(help_text)
 
 
 @router.message(Command('all_pending_posts'))
