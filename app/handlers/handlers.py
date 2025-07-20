@@ -33,7 +33,8 @@ async def help_command(message: Message):
 
 @router.message(Command('all_pending_posts'))
 async def all_pending_posts(message: Message):
-    if not is_admin(message.from_user.username):
+    x = await is_admin(message.from_user.username)
+    if not x[0]:
         return
     posts = await req.get_pending_posts()
     for post in posts:
@@ -46,7 +47,8 @@ async def all_pending_posts(message: Message):
 
 @router.message(Command('delete_pending_post'))
 async def delete_pending_post(message: Message):
-    if not is_admin(message.from_user.username):
+    x = await is_admin(message.from_user.username)
+    if not x[0]:
         return
     try:
         post_id = int(message.text.split()[1])
@@ -58,7 +60,8 @@ async def delete_pending_post(message: Message):
 
 @router.message(Command('all_scheduled_posts'))
 async def all_scheduled_posts(message: Message):
-    if not is_admin(message.from_user.username):
+    x = await is_admin(message.from_user.username)
+    if not x[0]:
         return
     posts = await req.get_scheduled_posts()
     for post in posts:
@@ -71,7 +74,8 @@ async def all_scheduled_posts(message: Message):
 
 @router.message(Command('delete_scheduled_post'))
 async def delete_scheduled_post(message: Message):
-    if not is_admin(message.from_user.username):
+    x = await is_admin(message.from_user.username)
+    if not x[0]:
         return
     try:
         post_id = int(message.text.split()[1])
