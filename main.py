@@ -13,7 +13,7 @@ from app.database.models import async_main
 from dotenv import load_dotenv
 
 from app.middlewares.album import AlbumMiddleware
-from app.utils.scheduler import scheduler_task
+from app.utils.scheduler import scheduler_task, pending_task
 
 
 load_dotenv()
@@ -32,6 +32,7 @@ async def start(message: Message):
 
 async def on_startup(dispatcher):
     scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')])
+    scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')])
     scheduler.start()
     print("Планировщик запущен")
 
