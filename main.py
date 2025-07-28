@@ -31,7 +31,7 @@ async def start(message: Message):
 
 
 async def on_startup(dispatcher):
-    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')])
+    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID'), scheduler])
     scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')])
     scheduler.start()
     print("Планировщик запущен")

@@ -30,7 +30,7 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
 
 
 async def unpin_after_duration(bot: Bot, chat_id: int, message_id: int, duration_seconds: int):
-    await asyncio.sleep(duration_seconds)
+    #await asyncio.sleep(duration_seconds)
     try:
         await bot.unpin_chat_message(chat_id, message_id=message_id)
     except Exception as e:
@@ -53,7 +53,7 @@ async def scheduler_task(bot: Bot, channel_id: int, scheduler):
         if post.pin_duration_minutes > 0:
             try:
                 await bot.pin_chat_message(channel_id, msg[0].message_id, disable_notification=True)
-                unpin_time = datetime.now(tz=msk_tz) + timedelta(minutes=post.pin_duration_minutes)
+                unpin_time = datetime.now(tz=msk_tz) + timedelta(seconds=post.pin_duration_minutes)
 
                 scheduler.add_job(
                     unpin_after_duration,

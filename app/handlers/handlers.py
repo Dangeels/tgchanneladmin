@@ -156,6 +156,7 @@ class ScheduleState(StatesGroup):
 
 @router.message(Command("schedule"))
 async def start_schedule(message: Message, state: FSMContext):
+    print(message.caption)
     x = await is_admin(message.from_user.username)
     if x[0]:
         await message.answer("Отправьте контент поста (текст и фото, при наличии).")
