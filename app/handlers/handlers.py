@@ -76,8 +76,6 @@ async def all_scheduled_posts(message: Message):
         return
     posts = await req.get_scheduled_posts()
     for post in posts:
-        if post.is_published:
-            continue
         await message.answer(text=f'id поста: {post.id}.\n'
                                   f'Запланированное время публикации поста: {post.scheduled_time}\n'
                                   f'Продолжительность нахождения поста в закреплённых в минутах: {post.pin_duration_minutes}')

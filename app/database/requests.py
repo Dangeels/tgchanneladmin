@@ -2,40 +2,7 @@ import os
 import pytz
 from datetime import datetime, timedelta
 from sqlalchemy import select, update, delete, func
-from app.database.models import async_session, PendingPost, ScheduledPost, LastMessage, PendingCounter
-
-
-def get_current_date():
-    msk_tz = pytz.timezone("Europe/Moscow")
-    now = datetime.now(msk_tz)
-    date_str = now.strftime("%Y-%m-%d")
-    return date_str
-
-
-async def get_pending_count(chat_id):
-    async with async_session() as session:
-        count = await session.scalar(select(PendingCounter).where(PendingCounter.chat_id == chat_id, PendingCounter.date == get_current_date()))
-        if not count:
-            return 0
-        return count.messages_count
-
-
-async def set_or_update_pending_count(chat_id):
-    async with async_session() as session:
-        async with session.begin():
-            # Проверяем существование с lock (with_for_update)
-            existing = await session.scalar(
-                select(PendingCounter)
-                .where(PendingCounter.chat_id == chat_id,
-                       PendingCounter.date == get_current_date())
-                .with_for_update()
-            )
-            if existing:
-                existing.messages_count += 1
-                session.add(existing)
-            else:
-                session.add(PendingCounter(chat_id=chat_id, messages_count=1, date=get_current_date()))
-        await session.commit()
+from app.database.models import async_session, PendingPost, ScheduledPost, LastMessage
 
 
 async def get_last_message_time():
@@ -126,27 +93,9 @@ async def add_scheduled_post(content_type: str, text: str, photo_file_ids: list[
                 existing.text = text or existing.text
                 existing.scheduled_time = scheduled_time
                 existing.pin_duration_minutes = pin_duration_minutes
-                existing.is_published = False
-                existing.message_id = 0
                 session.add(existing)
             else:
                 session.add(post)
-        await session.commit()
-
-
-async def set_is_published_true(id: int, message_id: int):
-    async with async_session() as session:
-        await session.scalar(update(ScheduledPost)
-                             .where(ScheduledPost.id == id)
-                             .values(is_published=True, message_id=message_id))
-        await session.commit()
-
-
-async def set_is_published_false(id: int):
-    async with async_session() as session:
-        await session.scalar(update(ScheduledPost)
-                             .where(ScheduledPost.id == id)
-                             .values(is_published=False, message_id=0))
         await session.commit()
 
 
