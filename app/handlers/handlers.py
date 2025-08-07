@@ -1,6 +1,6 @@
 import asyncio
 import os
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -8,6 +8,7 @@ from aiogram.types import Message, InputMediaPhoto
 import app.database.requests as req
 from datetime import datetime, timedelta
 from app.handlers.admin_handlers import is_admin
+from app.utils.scheduler import update_unpin_or_delete_task
 import pytz
 
 router = Router()
@@ -15,16 +16,19 @@ router = Router()
 
 @router.message(Command("help"))
 async def help_command(message: Message):
+    if message.chat.type != 'private':
+        return
     help_text = """
 Помощь по боту для администрирования Telegram-канала
 Этот бот помогает управлять постами в канале: добавлять в очередь, планировать публикации и т.д. Доступны только для администраторов.
 Доступные команды:
 - /pending: Добавить пост в очередь на публикацию.
-- /schedule: Добавить пост и запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
+- /schedule: Добавить пост и опубликовать сразу/запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
+- /pin_post [id] date[HH:MM DD-MM-YYYY]: Закрепить уже опубликованный пост или добавить закрепление для запланированного поста, где дата - время открепления поста, если его не указывать, пост будет закреплён навсегда
 - /all_pending_posts: Показать все посты в очереди на публикацию
 - /all_scheduled_posts: Показать все посты с определённым временем публикации
-- /delete_pending_post id: Удалить определённый пост из очереди по id поста
-- /delete_scheduled_post id: Удалить определённый пост с назначенным временем публикации по id поста
+- /delete_pending_post [id]: Удалить определённый пост из очереди по id поста
+- /delete_scheduled_post [id]: Удалить из базы данных определённый пост с назначенным временем публикации по id поста, если пост уже опубликован, он также будет удалён
 
 - /all_admins - получить список всех администраторов 
 - /set_admin @username - добавить нового администратора
@@ -39,7 +43,7 @@ async def help_command(message: Message):
 @router.message(Command('all_pending_posts'))
 async def all_pending_posts(message: Message):
     x = await is_admin(message.from_user.username)
-    if not x[0]:
+    if not x[0] or message.chat.type != 'private':
         return
     posts = await req.get_pending_posts()
     for post in posts:
@@ -59,7 +63,7 @@ async def all_pending_posts(message: Message):
 @router.message(Command('delete_pending_post'))
 async def delete_pending_post(message: Message):
     x = await is_admin(message.from_user.username)
-    if not x[0]:
+    if not x[0] or message.chat.type != 'private':
         return
     try:
         post_id = int(message.text.split()[1])
@@ -72,15 +76,10 @@ async def delete_pending_post(message: Message):
 @router.message(Command('all_scheduled_posts'))
 async def all_scheduled_posts(message: Message):
     x = await is_admin(message.from_user.username)
-    if not x[0]:
+    if not x[0] or message.chat.type != 'private':
         return
     posts = await req.get_scheduled_posts()
     for post in posts:
-        if post.is_published:
-            continue
-        await message.answer(text=f'id поста: {post.id}.\n'
-                                  f'Запланированное время публикации поста: {post.scheduled_time}\n'
-                                  f'Продолжительность нахождения поста в закреплённых в минутах: {post.pin_duration_minutes}')
         if post.photo_file_ids:
             if len(post.photo_file_ids) == 1:
                 await message.answer_photo(post.photo_file_ids[0], caption=post.text)
@@ -91,19 +90,47 @@ async def all_scheduled_posts(message: Message):
                 await message.answer_media_group(media=media)
         else:
             await message.answer(text=post.text)
+        text = f'id поста: {post.id}.\n'
+        published = {True: 'Пост уже опубликован\n', False: f'Запланированное время публикации поста: {post.scheduled_time}\n'}
+        unpin = {True: f'Пост будет откреплён: {post.unpin_time}\n', False: 'Пост не будет закреплён\n'}
+        text+=published[post.is_published]+unpin[post.unpin_time is not None]+f'Пост будет удалён: {post.delete_time}'
+        await message.answer(text=text)
 
 
-@router.message(Command('delete_scheduled_post'))
-async def delete_scheduled_post(message: Message):
+async def delete_scheduled_post(message: Message, bot: Bot, chat_id):
     x = await is_admin(message.from_user.username)
-    if not x[0]:
+    if not x[0] or message.chat.type != 'private':
         return
     try:
         post_id = int(message.text.split()[1])
-        await req.delete_scheduled_post(post_id)
-        await message.answer('Пост успешно удалён')
+        post = await req.get_scheduled_post(post_id)
+        if post.is_published:
+            await bot.delete_messages(chat_id, post.message_ids)
+        a = await req.delete_scheduled_post(post_id)
+        if a:
+            await message.answer('Пост успешно удалён')
+    except Exception as e:
+        await message.answer(f'Укажите корректный id поста {e}')
+
+
+async def pin_post(message: Message, bot: Bot, chat_id, scheduler):
+    x = await is_admin(message.from_user.username)
+    if not x[0] or message.chat.type != 'private':
+        return
+    try:
+        m_text = message.text.split()
+        post = await req.get_scheduled_post(int(m_text[1]))
+        if len(message.text.split()) >= 3:
+            unpin = ' '.join(m_text[2:])
+        else:
+            unpin = '12:00 31-12-2200'
+        unpin = datetime.strptime(unpin, '%H:%M %d-%m-%Y')
+        await req.add_or_update_scheduled_post(content_type=post.content_type, unpin_time=unpin, post_id=post.id,
+                                               is_published=post.is_published)
+        if post.is_published:
+            await update_unpin_or_delete_task(bot, chat_id, scheduler)
     except Exception:
-        await message.answer('Укажите корректный id поста')
+        await message.answer('Не удалось закрепить пост')
 
 
 class PendingState(StatesGroup):
@@ -113,7 +140,7 @@ class PendingState(StatesGroup):
 @router.message(Command('pending'))
 async def store_pending_post(message: Message, state: FSMContext):
     x = await is_admin(message.from_user.username)
-    if x[0]:
+    if x[0] and message.chat.type == 'private':
         await message.answer("Отправьте контент поста (текст и фото, при наличии).")
         await state.set_state(PendingState.content)
 
@@ -152,12 +179,13 @@ class ScheduleState(StatesGroup):
     content = State()
     time = State()
     unpin_time = State()
+    delete_time = State()
 
 
 @router.message(Command("schedule"))
 async def start_schedule(message: Message, state: FSMContext):
     x = await is_admin(message.from_user.username)
-    if x[0]:
+    if x[0] and message.chat.type == 'private':
         await message.answer("Отправьте контент поста (текст и фото, при наличии).")
         await state.set_state(ScheduleState.content)
 
@@ -199,20 +227,25 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
         )
 
     await message.answer(
-        "Отправьте время публикации в формате HH:MM DD-MM-YYYY. Время публикации считается в часовом поясе Москвы.")
+        "Отправьте время публикации в формате HH:MM DD-MM-YYYY. Время публикации считается в часовом поясе Москвы."
+        "\nОтправьте /now, если пост нужно опубликовать сейчас")
     await state.set_state(ScheduleState.time)
 
 
 @router.message(ScheduleState.time)
 async def get_time(message: Message, state: FSMContext):
     try:
-        scheduled_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
+        if message.text == '/now':
+            scheduled_time_moscow = datetime.now() + timedelta(minutes=1, seconds=30)
+        else:
+            scheduled_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
         if scheduled_time_moscow < datetime.now():
             await message.reply("Время публикации должно быть корректным")
             return
         await state.update_data(scheduled_time_moscow=scheduled_time_moscow)
         await message.answer(
-            "Отправьте дату и время, до которых нужно закрепить пост\n/stop если пост не нужно закреплять")
+            "Отправьте дату и время, до которых нужно закрепить пост\n/stop если пост не нужно закреплять\n/forever "
+            "если пост нужно закрепить навсегда")
         await state.set_state(ScheduleState.unpin_time)
     except ValueError:
         await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY.")
@@ -222,22 +255,47 @@ async def get_time(message: Message, state: FSMContext):
 async def get_unpin_time(message: Message, state: FSMContext):
     data = await state.get_data()
     try:
-        if message.text.lower() == '/stop':
-            unpin_time_moscow = 0
+        if message.text.lower() == '/forever':
+            unpin_time_moscow = "12:00 31-12-2200"
+            unpin_time_moscow = datetime.strptime(unpin_time_moscow, "%H:%M %d-%m-%Y")
+        elif message.text.lower() == '/stop':
+            unpin_time_moscow = None
         else:
+            #unpin_time_moscow -= data['scheduled_time_moscow']
+            #unpin_time_moscow = unpin_time_moscow.days*24*60*60+unpin_time_moscow.seconds
             unpin_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
             if unpin_time_moscow <= data['scheduled_time_moscow']:
                 await message.reply("Время открепления должно быть позже времени публикации.")
                 return
-            unpin_time_moscow -= data['scheduled_time_moscow']
-            unpin_time_moscow = unpin_time_moscow.days*24*60*60+unpin_time_moscow.seconds
-        await req.add_scheduled_post(
+        await state.update_data(unpin_time=unpin_time_moscow)
+        await message.answer(
+            "Отправьте дату и время удаления поста пост\n/forever если пост нужно опубликовать навсегда")
+        await state.set_state(ScheduleState.delete_time)
+    except ValueError:
+        await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /stop.")
+
+
+@router.message(ScheduleState.delete_time)
+async def get_delete_time(message: Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        if message.text.lower() == '/forever':
+            delete_time = "12:00 31-12-2200"
+            delete_time = datetime.strptime(delete_time, "%H:%M %d-%m-%Y")
+        else:
+            delete_time = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
+            if delete_time <= data['scheduled_time_moscow']:
+                await message.reply("Время удаления поста должно быть позже времени публикации.")
+                return
+
+        await req.add_or_update_scheduled_post(
             data['content_type'],
             data['text'],
             data['photo_file_ids'],
             data['scheduled_time_moscow'],
-            unpin_time_moscow,
-            data['media_group_id']
+            data['media_group_id'],
+            unpin_time=data['unpin_time'],
+            delete_time=delete_time
         )
         await message.answer("Пост успешно запланирован.")
     except ValueError:

@@ -17,14 +17,6 @@ class LastMessage(Base):
     time = mapped_column(DateTime)
 
 
-class PendingCounter(Base):
-    __tablename__ = 'pending_counter'
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    chat_id: Mapped[int] = mapped_column()
-    messages_count: Mapped[int] = mapped_column()
-    date: Mapped[str] = mapped_column()
-
-
 class PendingPost(Base):
     __tablename__ = 'pending_posts'
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -41,11 +33,18 @@ class ScheduledPost(Base):
     text: Mapped[str | None] = mapped_column()
     photo_file_ids = mapped_column(JSON, default=list)
     scheduled_time = mapped_column(DateTime)
-    delete_time = mapped_column(DateTime)
-    pin_duration_minutes: Mapped[int] = mapped_column()
-    is_published: Mapped[bool] = mapped_column()
-    message_id: Mapped[int] = mapped_column()
     media_group_id: Mapped[int] = mapped_column()
+    is_published: Mapped[bool] = mapped_column(default=False)
+    message_ids: Mapped[list] = mapped_column(JSON, default=list)
+    unpin_time = mapped_column(DateTime, default=None, nullable=True)
+    delete_time = mapped_column(DateTime, default=None, nullable=True)
+
+
+class PostIsPinned(Base):
+    __tablename__ = 'is_pinned'
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column()
+    pinned: Mapped[bool] = mapped_column(default=False)
 
 
 class Admin(Base):
