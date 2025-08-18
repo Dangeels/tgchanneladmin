@@ -25,12 +25,13 @@ scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
 
 @dp.message(CommandStart())
-async def start(message: Message):
+async def start(message: Message):  # потом надо текст придумать
     await message.answer(
-        'Если хотите предложить свой пост для публикации, пишите администрации канала @push_admin_Evgen')
+        '/menu'
+    )
 
 
-@dp.message(Command('pin_post')) # /pin_post [id] date[HH:MM DD-MM-YYYY]
+@dp.message(Command('pin_post'))  # /pin_post [id] date[HH:MM DD-MM-YYYY]
 async def command_pin_post(message: Message):
     await pin_post(message, bot, os.getenv('CHANNEL_ID'), scheduler)
 

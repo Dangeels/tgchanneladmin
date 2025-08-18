@@ -85,8 +85,8 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
 
 async def unpin_after_duration(bot: Bot, chat_id: int, message_id: int):
     try:
-        await req.set_pin_info(message_id, False)
         await bot.unpin_chat_message(chat_id, message_id=message_id)
+        await req.set_pin_info(message_id, False)
     except Exception as e:
         print(f"Не удалось открепить сообщение {message_id} в чате {chat_id}: {e}")
 
@@ -131,17 +131,32 @@ async def scheduler_task(bot: Bot, channel_id: int, scheduler):
 
 
 async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler):
+    msk_tz = pytz.timezone("Europe/Moscow")
+    now = datetime.now(msk_tz)
     # Проверка запланированных постов
     scheduled_posts = await get_scheduled_posts()
     for post in scheduled_posts:
         if not post.is_published:
             continue
         msg = post.message_ids
-        print(msg)
-        if post.unpin_time:
+        if not msg:
+            continue
+
+        unpin_time = make_aware(post.unpin_time, msk_tz) if post.unpin_time else None
+        delete_time = make_aware(post.delete_time, msk_tz) if post.delete_time else None
+
+        first_msg_id = msg[0]
+        is_pinned = await req.get_pin_info(first_msg_id)
+        # 1) Пин разрешён ТОЛЬКО если время открепления ещё не наступило
+        if unpin_time and now < unpin_time and not is_pinned:
             try:
-                await req.set_pin_info(msg[0], True)
-                await bot.pin_chat_message(channel_id, msg[0], disable_notification=True)
+                await bot.pin_chat_message(channel_id, first_msg_id, disable_notification=True)
+                await req.set_pin_info(first_msg_id, True)  # фиксируем только после успеха
+            except Exception as e:
+                logger.error(f"Не удалось закрепить сообщение {first_msg_id}: {e}")
+
+        if unpin_time and now < unpin_time:
+            try:
                 scheduler.add_job(
                     notification_admins,
                     trigger=DateTrigger(run_date=post.unpin_time-timedelta(days=3)),
@@ -165,7 +180,7 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
                 )
             except Exception as e:
                 print(f"Не удалось закрепить сообщение: {e}")
-        if post.delete_time:
+        if delete_time and now < delete_time:
             try:
                 scheduler.add_job(
                     notification_admins,

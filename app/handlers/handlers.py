@@ -16,7 +16,8 @@ router = Router()
 
 @router.message(Command("help"))
 async def help_command(message: Message):
-    if message.chat.type != 'private':
+    x = await is_admin(message.from_user.username)
+    if message.chat.type != 'private' or not x[0]:
         return
     help_text = """
 Помощь по боту для администрирования Telegram-канала
