@@ -32,18 +32,18 @@ async def start(message: Message):  # потом надо текст приду�
     )
 
 
-@dp.message(Command('pin_post'))  # /pin_post [id] date[HH:MM DD-MM-YYYY]
+@dp.message(Command('pin_post'))  # /pin_post [post_id] [channel_id] date[HH:MM DD-MM-YYYY]
 async def command_pin_post(message: Message):
-    await pin_post(message, bot, os.getenv('CHANNEL_ID'), scheduler)
+    await pin_post(message, bot, scheduler)
 
 
 @dp.message(Command('delete_scheduled_post'))
 async def command_delete_post(message: Message):
-    await delete_scheduled_post(message, bot, os.getenv('CHANNEL_ID'))
+    await delete_scheduled_post(message, bot)
 
 
 async def on_startup(dispatcher):
-    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID'), scheduler],
+    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, scheduler],
                       id='scheduler_task', replace_existing=True)
     scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')],
                       id='pending_task', replace_existing=True)
@@ -61,8 +61,8 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     dp.include_routers(router, router1, menu_router)
-    await handle_missed_tasks(bot, os.getenv('CHANNEL_ID'), scheduler)
     await async_main()
+    await handle_missed_tasks(bot, scheduler)
     await dp.start_polling(bot)
 
 

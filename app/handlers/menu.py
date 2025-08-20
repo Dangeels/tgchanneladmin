@@ -4,8 +4,9 @@ import sys
 from os import getenv
 from typing import Any, Awaitable, Callable, Dict, List
 import uuid
+import os
 
-from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram import F, Router, Bot
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
@@ -14,10 +15,20 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+from datetime import datetime, timedelta
+import pytz
+from app.database.requests import add_or_update_scheduled_post
+from dotenv import load_dotenv
 
 # Replace with your admin chat ID
 ADMIN_CHAT_ID = -1002890391749  # Example, replace with actual chat ID
+
+load_dotenv()
+
+FREE_CHAT_ID = (os.getenv('FREE_CHAT_ID'))
+MAIN_CHAT_ID = (os.getenv('MAIN_CHAT_ID'))
+PREMIUM_CHANNEL_ID = (os.getenv('PREMIUM_CHANNEL_ID'))
+
 
 # Global storage for pending orders
 pending_orders: Dict[str, Dict] = {}
@@ -180,6 +191,111 @@ def get_suboption_key(suboption: str, user_type: str, option: str) -> str:
         return "extend_freelancer"
     return ""
 
+def parse_period(text: str) -> timedelta | None:
+    if text == "НАВСЕГДА":
+        return None
+    parts = text.split()
+    if len(parts) < 2:
+        return None
+    try:
+        num = int(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1].lower()
+    if 'недел' in unit:
+        return timedelta(weeks=num)
+    elif 'месяц' in unit:
+        return timedelta(days=30 * num)  # approximation
+    elif 'поднят' in unit:
+        return None
+    return None
+
+def get_chat_ids(user_type: str, option: str, selected: dict) -> list[int]:
+    if option == "1":
+        return [FREE_CHAT_ID]
+    elif option == "2":
+        return [MAIN_CHAT_ID]
+    elif option == "3":
+        return [PREMIUM_CHANNEL_ID]
+    elif option in ["4", "5", "6"]:
+        return [MAIN_CHAT_ID, PREMIUM_CHANNEL_ID, FREE_CHAT_ID]
+    return []
+
+
+def get_times(user_type: str, option: str, selected: dict) -> tuple[datetime, dict[int, str | None], dict[int, str | None]]:
+    tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(tz)
+    scheduled_time = now
+    unpin_times = {}
+    delete_times = {}
+    chat_ids = get_chat_ids(user_type, option, selected)
+    forever_date = datetime.strptime("12:00 31-12-2200", "%H:%M %d-%m-%Y").replace(tzinfo=tz)
+    forever_date_str = forever_date.isoformat()  # Changed: Serialize to ISO string
+
+    for chat_id in chat_ids:
+        unpin_times[chat_id] = forever_date_str  # Default to forever if pinned
+        delete_times[chat_id] = forever_date_str  # Default to forever
+
+    # Base delete_time per chat
+    if user_type == 'freelancer':
+        if option in ['2', '4', '5']:
+            for chat_id in chat_ids:
+                delete_times[chat_id] = (now + timedelta(days=30)).isoformat()  # Changed: Serialize
+        elif option == '6':
+            for chat_id in chat_ids:
+                delete_times[chat_id] = forever_date_str
+    elif user_type == 'employer':
+        for chat_id in chat_ids:
+            delete_times[chat_id] = forever_date_str
+
+    # Extend for delete_time
+    if 'extend' in selected:
+        var = selected['extend']
+        key = get_suboption_key('extend', user_type, option)
+        period_text = PRICES_DICT[key][var]['text']
+        additional = parse_period(period_text)
+        if additional is None:
+            for chat_id in chat_ids:
+                delete_times[chat_id] = forever_date_str
+        else:
+            for chat_id in chat_ids:
+                if delete_times[chat_id] != forever_date_str:
+                    delete_time_dt = datetime.fromisoformat(delete_times[chat_id])  # Changed: Deserialize
+                    delete_times[chat_id] = (delete_time_dt + additional).isoformat()  # Changed: Re-serialize
+
+    # Pin for unpin_time per chat
+    if 'pin' in selected:
+        var = selected['pin']
+        key = get_suboption_key('pin', user_type, option)
+        period_text = PRICES_DICT[key][var]['text']
+        period = parse_period(period_text)
+        if period:
+            unpin_time = (now + period).isoformat()  # Changed: Serialize
+        else:
+            unpin_time = forever_date_str
+        for chat_id in chat_ids:
+            unpin_times[chat_id] = unpin_time
+    else:
+        for chat_id in chat_ids:
+            unpin_times[chat_id] = None  # No pin
+
+    # Special for packages
+    if option == '4':
+        for chat_id in chat_ids:
+            if chat_id == FREE_CHAT_ID:
+                unpin_times[chat_id] = (now + timedelta(days=30)).isoformat()  # Changed: Serialize
+            else:
+                unpin_times[chat_id] = None
+    elif option == '5':
+        for chat_id in chat_ids:
+            unpin_times[chat_id] = (now + timedelta(days=30)).isoformat()  # Changed: Serialize
+    elif option == '6':
+        for chat_id in chat_ids:
+            unpin_times[chat_id] = forever_date_str
+
+    return scheduled_time, unpin_times, delete_times
+
+
 # Function to build extra text and keyboard (category buttons)
 async def build_extra_text_and_keyboard(state: FSMContext, user_type: str, option: str) -> tuple[str, InlineKeyboardMarkup]:
     data = await state.get_data()
@@ -218,8 +334,9 @@ async def build_extra_text_and_keyboard(state: FSMContext, user_type: str, optio
     builder.adjust(2)  # Adjust to 2 per row for better layout
     return text, builder.as_markup()
 
+
 # Function to build subextra keyboard (variants for a suboption)
-async def build_subextra_text_and_keyboard(state: FSMContext, user_type: str, option: str, suboption: str) -> tuple[str, InlineKeyboardMarkup]:
+async def build_subextra_text_and_keyboard(state: FSMContext, user_type: str, option: str, suboption: str) -> tuple[str, InlineKeyboardMarkup|None]:
     data = await state.get_data()
     selected = data.get("selected_suboptions", {})
     key = get_suboption_key(suboption, user_type, option)
@@ -255,6 +372,7 @@ async def command_menu(message: Message, state: FSMContext):
     builder.button(text="Б) Для фрилансеров", callback_data=MenuCallback(level="sub", user_type="freelancer").pack())
     builder.adjust(1)  # One button per row
     await message.answer("Выберите категорию:", reply_markup=builder.as_markup())
+
 
 # Main callback query handler
 @menu_router.callback_query(MenuCallback.filter())
@@ -414,16 +532,16 @@ async def process_post_content(message: Message, state: FSMContext, bot: Bot, al
     }
 
     # Format suboptions string
-    suboptions_str = ', '.join([f"{SUBOPTION_NAMES.get(k, k)}: {PRICES_DICT[get_suboption_key(k, data['user_type'], data['option'])][v]['text']}" for k, v in data['selected_suboptions'].items()]) if data['selected_suboptions'] else 'Нет'
+    suboptions_str = ', '.join(
+        [f"{SUBOPTION_NAMES.get(k, k)}: {PRICES_DICT[get_suboption_key(k, data['user_type'], data['option'])][v]['text']}" for k, v in data['selected_suboptions'].items()]) if data['selected_suboptions'] else 'Нет'
 
     # If post has photos, send them to admin first
     if file_ids:
         media = [InputMediaPhoto(media=file_id, caption=text if i == 0 else None, parse_mode=ParseMode.HTML) for i, file_id in enumerate(file_ids)]
         await bot.send_media_group(ADMIN_CHAT_ID, media)
-        post_str = "Пост: опубликован выше"
+        post_str = "Пост: фото отправлены выше"
     else:
-        await bot.send_message(ADMIN_CHAT_ID, text)
-        post_str = f"Пост: опубликован выше"
+        post_str = f"Пост: {text}"
 
     # Format caption for check photo
     caption = (
@@ -443,10 +561,16 @@ async def process_post_content(message: Message, state: FSMContext, bot: Bot, al
     builder.adjust(2)
 
     # Send check photo with caption and buttons to admin
-    await bot.send_photo(ADMIN_CHAT_ID, photo=data['check_photo'], caption=caption, reply_markup=builder.as_markup(), parse_mode=ParseMode.HTML)
+    await bot.send_photo(
+        ADMIN_CHAT_ID, photo=data['check_photo'],
+        caption=caption,
+        reply_markup=builder.as_markup(),
+        parse_mode=ParseMode.HTML
+    )
 
     await message.answer("Пост получен и отправлен на модерацию. Спасибо!")
     await state.clear()
+
 
 # Admin callback handler
 @menu_router.callback_query(AdminCallback.filter())
@@ -460,19 +584,41 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
         order = pending_orders.pop(order_id)
         user_id = order['user_id']
         if action == "confirm":
+            tz = pytz.timezone('Europe/Moscow')
+            now = datetime.now(tz)
+            scheduled_time, unpin_times, delete_times = get_times(
+                order['user_type'], order['option'], order['selected_suboptions']
+            )
+            chat_ids = get_chat_ids(order['user_type'], order['option'], order['selected_suboptions'])
+            await add_or_update_scheduled_post(
+                content_type=order['content_type'],
+                text=order['text'],
+                photo_file_ids=order['file_ids'] or [],
+                scheduled_time=scheduled_time,
+                media_group_id=order['media_group_id'] or 0,
+                is_published={str(chat_id): False for chat_id in chat_ids},
+                message_ids={str(chat_id): [] for chat_id in chat_ids},
+                unpin_time=unpin_times,
+                delete_time=delete_times,
+                chat_ids=chat_ids,
+                post_id=0
+            )
             await bot.send_message(user_id, "Ваш заказ подтверждён!")
             status = "Подтверждено"
         else:
             await bot.send_message(user_id, "Ваш заказ отклонён.")
             status = "Отклонено"
         await query.message.edit_caption(caption=query.message.caption + f"\n\nСтатус: {status}", reply_markup=None)
+        print(status)
     else:
         await query.answer("Заказ не найден.")
+
 
 # Fallback for wrong input in states
 @menu_router.message(Purchase.waiting_check)
 async def invalid_check(message: Message):
     await message.answer("Пожалуйста, отправьте фотографию чека.")
+
 
 @menu_router.message(Purchase.waiting_post)
 async def invalid_post(message: Message):

@@ -3,23 +3,39 @@ import pytz
 from datetime import datetime, timedelta
 from sqlalchemy import select, update, delete, func
 from app.database.models import async_session, PendingPost, ScheduledPost, LastMessage, PostIsPinned
+import logging
+from sqlalchemy.orm.attributes import flag_modified
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, filename='bot.log', format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
-async def get_pin_info(post_id: int):
+async def get_pin_info(chat_id: int, message_id: int):  # Changed: Added chat_id param
     async with async_session() as session:
-        existing = await session.scalar(select(PostIsPinned).where(PostIsPinned.post_id == post_id))
+        existing = await session.scalar(
+            select(PostIsPinned).where(  # Changed: Use MessagePinned; query by both chat_id and message_id
+                PostIsPinned.chat_id == chat_id,
+                PostIsPinned.message_id == message_id
+            )
+        )
         return existing.pinned if existing else False
 
 
-async def set_pin_info(post_id: int, pinned: bool):
+async def set_pin_info(chat_id: int, message_id: int, pinned: bool):
     async with async_session() as session:
         async with session.begin():
-            existing = await session.scalar(select(PostIsPinned).where(PostIsPinned.post_id == post_id).with_for_update())
+            existing = await session.scalar(
+                select(PostIsPinned).where(  # Changed: Query by both
+                    PostIsPinned.chat_id == chat_id,
+                    PostIsPinned.message_id == message_id
+                ).with_for_update()
+            )
             if existing:
                 existing.pinned = pinned
                 session.add(existing)
             else:
-                session.add(PostIsPinned(post_id=post_id, pinned=pinned))
+                session.add(PostIsPinned(chat_id=chat_id, message_id=message_id, pinned=pinned))
         await session.commit()
 
 
@@ -86,65 +102,117 @@ async def delete_pending_post(post_id: int):
 
 
 async def add_or_update_scheduled_post(
-    content_type: str,
-    text: str | None = None,
-    photo_file_ids: list[str] | None = None,
-    scheduled_time: datetime | None = None,
-    media_group_id: int = 0,
-    is_published: bool = False,
-    message_ids: list | None = None,
-    unpin_time: datetime | None = None,
-    delete_time: datetime | None = None,
-    post_id: int = 0
+        content_type: str,
+        text: str | None = None,
+        photo_file_ids: list[str] | None = None,
+        scheduled_time: datetime | None = None,
+        media_group_id: int = 0,
+        is_published: dict | None = None,
+        message_ids: dict | None = None,
+        unpin_time: dict | None = None,
+        delete_time: dict | None = None,
+        chat_ids: list[int] | None = None,
+        post_id: int = 0
 ):
     if message_ids is None:
-        message_ids = []
+        message_ids = {}
     if not photo_file_ids:
         photo_file_ids = []
+    if unpin_time is None:
+        unpin_time = {}
+    if delete_time is None:
+        delete_time = {}
+    if not chat_ids:
+        chat_ids = []
+    if is_published is None:
+        is_published = {}
+    # Ensure all dictionary keys are strings
+    is_published = {str(k): v for k, v in is_published.items()}
+    message_ids = {str(k): v for k, v in message_ids.items()}
+    unpin_time = {str(k): v for k, v in unpin_time.items()}
+    delete_time = {str(k): v for k, v in delete_time.items()}
+
+    logger.info(
+        f"Input to add_or_update_scheduled_post: post_id={post_id}, is_published={is_published}, message_ids={message_ids}")
+
     post = ScheduledPost(
         content_type=content_type,
         text=text,
-        photo_file_ids=photo_file_ids.copy(),  # копируем список во избежание мутации аргумента
+        photo_file_ids=photo_file_ids.copy(),
         scheduled_time=scheduled_time,
         media_group_id=media_group_id or 0,
-        is_published=is_published,
+        is_published=is_published.copy(),
         message_ids=message_ids.copy(),
-        unpin_time=unpin_time,
-        delete_time=delete_time,
+        unpin_time=unpin_time.copy(),
+        delete_time=delete_time.copy(),
+        chat_ids=chat_ids.copy(),
     )
 
     async with async_session() as session:
         async with session.begin():
-            existing = await session.scalar(
-                select(ScheduledPost)
-                .where(
-                    ScheduledPost.id == post_id
+            try:
+                existing = await session.scalar(
+                    select(ScheduledPost)
+                    .where(ScheduledPost.id == post_id)
+                    .with_for_update()
                 )
-                .with_for_update()
-            )
-            if existing:
-                # Обновляем список photo_file_ids, добавляя новые уникальные элементы
-                updated_ids = existing.photo_file_ids or []
-                if photo_file_ids:
-                    for pid in photo_file_ids:
-                        if pid not in updated_ids:
-                            updated_ids.append(pid)
-                existing.photo_file_ids = updated_ids or existing.photo_file_ids
+                if existing:
+                    # Merge photo_file_ids
+                    updated_ids = existing.photo_file_ids or []
+                    if photo_file_ids:
+                        for pid in photo_file_ids:
+                            if pid not in updated_ids:
+                                updated_ids.append(pid)
+                    existing.photo_file_ids = updated_ids or existing.photo_file_ids
 
-                # Обновляем другие поля, если переданы значения
+                    # Update scalar fields
+                    existing.content_type = content_type or existing.content_type
+                    existing.text = text or existing.text
+                    existing.scheduled_time = scheduled_time or existing.scheduled_time
+                    existing.chat_ids = chat_ids.copy() or existing.chat_ids
+                    existing.media_group_id = media_group_id or existing.media_group_id
 
-                existing.text = text or existing.text
-                existing.scheduled_time = scheduled_time or existing.scheduled_time
-                existing.is_published = is_published
-                existing.message_ids = message_ids.copy() or existing.message_ids
-                existing.unpin_time = unpin_time or existing.unpin_time
-                existing.delete_time = delete_time or existing.delete_time
+                    # Merge dictionary fields
+                    existing_is_published = existing.is_published or {}
+                    existing_is_published.update(is_published)
+                    existing.is_published = existing_is_published
+                    flag_modified(existing, "is_published")  # Mark JSON field as modified
+                    logger.info(f"Updated post {post_id}: is_published={existing.is_published}")
 
-                session.add(existing)
-            else:
-                session.add(post)
+                    existing_message_ids = existing.message_ids or {}
+                    existing_message_ids.update(message_ids)
+                    existing.message_ids = existing_message_ids
+                    flag_modified(existing, "message_ids")  # Mark JSON field as modified
+                    logger.info(f"Updated post {post_id}: message_ids={existing.message_ids}")
 
-        await session.commit()
+                    existing_unpin_time = existing.unpin_time or {}
+                    existing_unpin_time.update(unpin_time)
+                    existing.unpin_time = existing_unpin_time
+                    flag_modified(existing, "unpin_time")
+
+                    existing_delete_time = existing.delete_time or {}
+                    existing_delete_time.update(delete_time)
+                    existing.delete_time = existing_delete_time
+                    flag_modified(existing, "delete_time")
+
+                    session.add(existing)
+                else:
+                    session.add(post)
+                    logger.info(f"Added new post: is_published={post.is_published}, message_ids={post.message_ids}")
+
+                await session.commit()
+                logger.info(f"Successfully committed post {post_id or post.id}")
+
+                # Verify database state
+                verification = await session.scalar(
+                    select(ScheduledPost).where(ScheduledPost.id == (post_id or post.id))
+                )
+                logger.info(
+                    f"Post {post_id or post.id} after commit: is_published={verification.is_published}, message_ids={verification.message_ids}")
+            except Exception as e:
+                logger.error(f"Failed to update post {post_id}: {e}")
+                await session.rollback()
+                raise
 
 
 async def get_scheduled_post(post_id: int):

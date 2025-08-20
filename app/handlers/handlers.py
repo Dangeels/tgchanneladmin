@@ -25,7 +25,7 @@ async def help_command(message: Message):
 Доступные команды:
 - /pending: Добавить пост в очередь на публикацию.
 - /schedule: Добавить пост и опубликовать сразу/запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
-- /pin_post [id] date[HH:MM DD-MM-YYYY]: Закрепить уже опубликованный пост или добавить закрепление для запланированного поста, где дата - время открепления поста, если его не указывать, пост будет закреплён навсегда
+- /pin_post [post_id] [chat_id] date[HH:MM DD-MM-YYYY]: Закрепить уже опубликованный пост или добавить закрепление для запланированного поста, где дата - время открепления поста, если его не указывать, пост будет закреплён навсегда
 - /all_pending_posts: Показать все посты в очереди на публикацию
 - /all_scheduled_posts: Показать все посты с определённым временем публикации
 - /delete_pending_post [id]: Удалить определённый пост из очереди по id поста
@@ -92,21 +92,23 @@ async def all_scheduled_posts(message: Message):
         else:
             await message.answer(text=post.text)
         text = f'id поста: {post.id}.\n'
-        published = {True: 'Пост уже опубликован\n', False: f'Запланированное время публикации поста: {post.scheduled_time}\n'}
+        published = {True: f'Пост уже опубликован в  чатах: {post.chat_ids}\n',
+                     False: f'Запланированное время публикации поста: {post.scheduled_time}\n'}
         unpin = {True: f'Пост будет откреплён: {post.unpin_time}\n', False: 'Пост не будет закреплён\n'}
-        text+=published[post.is_published]+unpin[post.unpin_time is not None]+f'Пост будет удалён: {post.delete_time}'
+        text+=published[all(i for i in post.is_published.values())]+unpin[post.unpin_time is not None]+f'Пост будет удалён: {post.delete_time}'
         await message.answer(text=text)
 
 
-async def delete_scheduled_post(message: Message, bot: Bot, chat_id):
+async def delete_scheduled_post(message: Message, bot: Bot):
     x = await is_admin(message.from_user.username)
     if not x[0] or message.chat.type != 'private':
         return
     try:
         post_id = int(message.text.split()[1])
         post = await req.get_scheduled_post(post_id)
-        if post.is_published:
-            await bot.delete_messages(chat_id, post.message_ids)
+        for chat_id in post.chat_ids:
+            if post.is_published.get(str(chat_id), False):
+                await bot.delete_messages(chat_id, post.message_ids)
         a = await req.delete_scheduled_post(post_id)
         if a:
             await message.answer('Пост успешно удалён')
@@ -114,21 +116,22 @@ async def delete_scheduled_post(message: Message, bot: Bot, chat_id):
         await message.answer(f'Укажите корректный id поста {e}')
 
 
-async def pin_post(message: Message, bot: Bot, chat_id, scheduler):
+async def pin_post(message: Message, bot: Bot, scheduler):
     x = await is_admin(message.from_user.username)
     if not x[0] or message.chat.type != 'private':
         return
     try:
         m_text = message.text.split()
+        chat_id = int(m_text[2])
         post = await req.get_scheduled_post(int(m_text[1]))
-        if len(message.text.split()) >= 3:
-            unpin = ' '.join(m_text[2:])
+        if len(message.text.split()) >= 4:
+            unpin = ' '.join(m_text[3:])
         else:
             unpin = '12:00 31-12-2200'
-        unpin = datetime.strptime(unpin, '%H:%M %d-%m-%Y')
-        await req.add_or_update_scheduled_post(content_type=post.content_type, unpin_time=unpin, post_id=post.id,
-                                               is_published=post.is_published)
-        if post.is_published:
+        unpin = datetime.strptime(unpin, '%H:%M %d-%m-%Y').isoformat()
+        await req.add_or_update_scheduled_post(content_type=post.content_type, unpin_time={str(chat_id): unpin},
+                                               post_id=post.id, is_published=post.is_published)
+        if post.is_published.get(str(chat_id), False):
             await update_unpin_or_delete_task(bot, chat_id, scheduler)
     except Exception:
         await message.answer('Не удалось закрепить пост')
@@ -154,7 +157,7 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
         text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
         media_group_id = album[0].media_group_id
-        await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id)
+        await req.add_or_update_pending_post(content_type, text, file_ids, int(media_group_id))
     else:
         # Одиночное сообщение
         media_group_id = message.media_group_id or 0
@@ -178,6 +181,7 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
 
 class ScheduleState(StatesGroup):
     content = State()
+    chat_selection = State()  # Added: New state for selecting multiple chat IDs
     time = State()
     unpin_time = State()
     delete_time = State()
@@ -186,15 +190,17 @@ class ScheduleState(StatesGroup):
 @router.message(Command("schedule"))
 async def start_schedule(message: Message, state: FSMContext):
     x = await is_admin(message.from_user.username)
-    if x[0] and message.chat.type == 'private':
+    if x[0] and message.chat.type == 'private':  # Ensures admin-only and private chat restriction
         await message.answer("Отправьте контент поста (текст и фото, при наличии).")
         await state.set_state(ScheduleState.content)
+    else:
+        await message.answer("Доступ запрещен.")  # Added: Explicit denial for non-admins or non-private chats
 
 
 @router.message(ScheduleState.content)
 async def get_content(message: Message, state: FSMContext, album: list[Message] | None = None):
     if album:
-        # Обработка медиа-группы
+        # Обработка медиа-группы (albums handled via middleware, as per Aiogram docs)
         content_type = 'photo'
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
         text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
@@ -227,10 +233,33 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
             media_group_id=media_group_id
         )
 
+    # Changed: Now prompt for chat selection after content, before time
     await message.answer(
-        "Отправьте время публикации в формате HH:MM DD-MM-YYYY. Время публикации считается в часовом поясе Москвы."
-        "\nОтправьте /now, если пост нужно опубликовать сейчас")
-    await state.set_state(ScheduleState.time)
+        f"Введите chat_id для публикации, если их несколько, введите через их через запятую.\n"
+        f"Текущие id чатов:\n"
+        f"Фриланс и Удалёнка | Бесплатное Размещение: {os.getenv('FREE_CHAT_ID')}\n"
+        f"Фриланс, вакансии, удалёнка: {os.getenv('MAIN_CHAT_ID')}\n"
+        f"Удалёнка и вакансии | Премиум: {os.getenv('PREMIUM_CHANNEL_ID')}"
+    )
+    await state.set_state(ScheduleState.chat_selection)
+
+
+# Added: New handler for chat selection state
+@router.message(ScheduleState.chat_selection)
+async def get_chat_selection(message: Message, state: FSMContext):
+    try:
+        # Parse comma-separated chat IDs into a list of integers
+        chat_ids = [int(cid.strip()) for cid in message.text.split(',')]
+        if not chat_ids:
+            raise ValueError("No valid chat IDs provided.")
+        await state.update_data(chat_ids=chat_ids)
+        await message.answer(
+            "Отправьте время публикации в формате HH:MM DD-MM-YYYY. Время публикации считается в часовом поясе Москвы."
+            "\nОтправьте /now, если пост нужно опубликовать сейчас"
+        )
+        await state.set_state(ScheduleState.time)
+    except ValueError:
+        await message.reply("Неверный формат chat_id. Введите числа через запятую.")
 
 
 @router.message(ScheduleState.time)
@@ -246,7 +275,8 @@ async def get_time(message: Message, state: FSMContext):
         await state.update_data(scheduled_time_moscow=scheduled_time_moscow)
         await message.answer(
             "Отправьте дату и время, до которых нужно закрепить пост\n/stop если пост не нужно закреплять\n/forever "
-            "если пост нужно закрепить навсегда")
+            "если пост нужно закрепить навсегда"
+        )
         await state.set_state(ScheduleState.unpin_time)
     except ValueError:
         await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY.")
@@ -255,22 +285,24 @@ async def get_time(message: Message, state: FSMContext):
 @router.message(ScheduleState.unpin_time)
 async def get_unpin_time(message: Message, state: FSMContext):
     data = await state.get_data()
+    chat_ids = data.get('chat_ids', [])  # Retrieve chat_ids from state
     try:
         if message.text.lower() == '/forever':
-            unpin_time_moscow = "12:00 31-12-2200"
-            unpin_time_moscow = datetime.strptime(unpin_time_moscow, "%H:%M %d-%m-%Y")
+            unpin_time_moscow = datetime.strptime("12:00 31-12-2200", "%H:%M %d-%m-%Y")
+            unpin_dict = {cid: unpin_time_moscow for cid in chat_ids}  # Adapted: Dict per chat for new DB schema
         elif message.text.lower() == '/stop':
-            unpin_time_moscow = None
+            unpin_dict = {}  # Adapted: Empty dict means no unpin (per scheduler logic)
         else:
-            #unpin_time_moscow -= data['scheduled_time_moscow']
-            #unpin_time_moscow = unpin_time_moscow.days*24*60*60+unpin_time_moscow.seconds
             unpin_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
             if unpin_time_moscow <= data['scheduled_time_moscow']:
                 await message.reply("Время открепления должно быть позже времени публикации.")
                 return
-        await state.update_data(unpin_time=unpin_time_moscow)
+            unpin_dict = {cid: unpin_time_moscow for cid in chat_ids}  # Adapted: Uniform dict for all chats
+
+        await state.update_data(unpin_time=unpin_dict)  # Changed: Store as dict instead of single value
         await message.answer(
-            "Отправьте дату и время удаления поста пост\n/forever если пост нужно опубликовать навсегда")
+            "Отправьте дату и время удаления поста\n/forever если пост нужно опубликовать навсегда"
+        )
         await state.set_state(ScheduleState.delete_time)
     except ValueError:
         await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /stop.")
@@ -279,26 +311,33 @@ async def get_unpin_time(message: Message, state: FSMContext):
 @router.message(ScheduleState.delete_time)
 async def get_delete_time(message: Message, state: FSMContext):
     data = await state.get_data()
+    chat_ids = data.get('chat_ids', [])
     try:
         if message.text.lower() == '/forever':
-            delete_time = "12:00 31-12-2200"
-            delete_time = datetime.strptime(delete_time, "%H:%M %d-%m-%Y")
+            delete_time = datetime.strptime("12:00 31-12-2200", "%H:%M %d-%m-%Y")
         else:
             delete_time = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
             if delete_time <= data['scheduled_time_moscow']:
                 await message.reply("Время удаления поста должно быть позже времени публикации.")
                 return
 
+        unpin_time = {str(cid): data['unpin_time'].isoformat() for cid in chat_ids}
+        delete_dict = {str(cid): delete_time.isoformat() for cid in chat_ids}
+        is_published = {str(cid): False for cid in chat_ids}  # Initialize with string keys
         await req.add_or_update_scheduled_post(
-            data['content_type'],
-            data['text'],
-            data['photo_file_ids'],
-            data['scheduled_time_moscow'],
-            data['media_group_id'],
-            unpin_time=data['unpin_time'],
-            delete_time=delete_time
+            content_type=data['content_type'],
+            text=data['text'],
+            photo_file_ids=data['photo_file_ids'],
+            scheduled_time=data['scheduled_time_moscow'],
+            media_group_id=data['media_group_id'],
+            unpin_time=unpin_time,
+            delete_time=delete_dict,
+            chat_ids=chat_ids,
+            is_published=is_published
         )
         await message.answer("Пост успешно запланирован.")
     except ValueError:
-        await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /stop.")
+        await message.reply("Неверный формат времени. Используйте HH:MM DD-MM-YYYY или /forever.")
+    except Exception as e:
+        await message.reply(f"Ошибка при планировании поста. {e}")
     await state.clear()

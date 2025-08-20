@@ -1,7 +1,7 @@
 from sqlalchemy import BigInteger, String, DateTime, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
-import os
+
 
 engine = create_async_engine(url='sqlite+aiosqlite:///db.sqlite3', echo=False)
 async_session = async_sessionmaker(engine)
@@ -34,16 +34,17 @@ class ScheduledPost(Base):
     photo_file_ids = mapped_column(JSON, default=list)
     scheduled_time = mapped_column(DateTime)
     media_group_id: Mapped[int] = mapped_column()
-    is_published: Mapped[bool] = mapped_column(default=False)
-    message_ids: Mapped[list] = mapped_column(JSON, default=list)
-    unpin_time = mapped_column(DateTime, default=None, nullable=True)
-    delete_time = mapped_column(DateTime, default=None, nullable=True)
+    is_published: Mapped[dict] = mapped_column(JSON, default=dict)
+    message_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    unpin_time = mapped_column(JSON, default=dict)
+    delete_time = mapped_column(JSON, default=dict)
+    chat_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
 
 
-class PostIsPinned(Base):
+class PostIsPinned(Base):  # Changed: Renamed from PostIsPinned for clarity; adapted for per-chat
     __tablename__ = 'is_pinned'
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    post_id: Mapped[int] = mapped_column()
+    chat_id: Mapped[int] = mapped_column(primary_key=True)  # Changed: Added chat_id as part of composite PK
+    message_id: Mapped[int] = mapped_column(primary_key=True)  # Changed: Renamed from post_id; part of composite PK
     pinned: Mapped[bool] = mapped_column(default=False)
 
 
