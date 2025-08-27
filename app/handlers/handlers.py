@@ -26,10 +26,11 @@ async def help_command(message: Message):
 - /pending: Добавить пост в очередь на публикацию.
 - /schedule: Добавить пост и опубликовать сразу/запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
 - /pin_post [id] date[HH:MM DD-MM-YYYY]: Закрепить уже опубликованный пост или добавить закрепление для запланированного поста, где дата - время открепления поста, если его не указывать, пост будет закреплён навсегда
-- /all_pending_posts: Показать все посты в очереди на публикацию
-- /all_scheduled_posts: Показать все посты с определённым временем публикации
+- /all_pending_posts: Показать все посты в очереди на публикацию (с указанием chat_id)
+- /all_scheduled_posts: Показать все посты с определённым временем публикации (с указанием chat_id)
 - /delete_pending_post [id]: Удалить определённый пост из очереди по id поста
 - /delete_scheduled_post [id]: Удалить из базы данных определённый пост с назначенным временем публикации по id поста, если пост уже опубликован, он также будет удалён
+- /chats: Показать все актуальные chat_id из настроек
 
 - /all_admins - получить список всех администраторов 
 - /set_admin @username - добавить нового администратора
@@ -41,6 +42,26 @@ async def help_command(message: Message):
     await message.answer(help_text)
 
 
+@router.message(Command('chats'))
+async def show_chats(message: Message):
+    x = await is_admin(message.from_user.username)
+    if message.chat.type != 'private' or not x[0]:
+        return
+    admin_chat_id = os.getenv('ADMIN_CHAT_ID')
+    channel_id = os.getenv('CHANNEL_ID')  # Премиум-канал
+    free_chat_id = os.getenv('FREE_CHAT_ID')
+    main_chat_id = os.getenv('MAIN_CHAT_ID')
+    notification_chat = os.getenv('NOTIFICATION_CHAT', admin_chat_id)
+    txt = (
+        f"ADMIN_CHAT_ID: {admin_chat_id}\n"
+        f"CHANNEL_ID (премиум): {channel_id}\n"
+        f"FREE_CHAT_ID: {free_chat_id}\n"
+        f"MAIN_CHAT_ID: {main_chat_id}\n"
+        f"NOTIFICATION_CHAT: {notification_chat}"
+    )
+    await message.answer(txt)
+
+
 @router.message(Command('all_pending_posts'))
 async def all_pending_posts(message: Message):
     x = await is_admin(message.from_user.username)
@@ -48,17 +69,17 @@ async def all_pending_posts(message: Message):
         return
     posts = await req.get_pending_posts()
     for post in posts:
-        await message.answer(text=f'id поста: {post.id}')
+        await message.answer(text=f'id поста: {post.id}\nchat_id: {getattr(post, "chat_id", None)}')
         if post.photo_file_ids:
             if len(post.photo_file_ids) == 1:
-                await message.answer_photo(post.photo_file_ids[0], caption=post.text)
+                await message.answer_photo(post.photo_file_ids[0], caption=(post.text or ''))
             else:
                 media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
                 if post.text:
                     media[0].caption = post.text  # Caption только для первого
                 await message.answer_media_group(media=media)
         else:
-            await message.answer(text=post.text)
+            await message.answer(text=(post.text or ''))
 
 
 @router.message(Command('delete_pending_post'))
@@ -83,15 +104,15 @@ async def all_scheduled_posts(message: Message):
     for post in posts:
         if post.photo_file_ids:
             if len(post.photo_file_ids) == 1:
-                await message.answer_photo(post.photo_file_ids[0], caption=post.text)
+                await message.answer_photo(post.photo_file_ids[0], caption=(post.text or ''))
             else:
                 media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
                 if post.text:
                     media[0].caption = post.text  # Caption только для первого
                 await message.answer_media_group(media=media)
         else:
-            await message.answer(text=post.text)
-        text = f'id поста: {post.id}.\n'
+            await message.answer(text=(post.text or ''))
+        text = f'id поста: {post.id}.\nchat_id: {getattr(post, "chat_id", None)}\n'
         published = {True: 'Пост уже опубликован\n', False: f'Запланированное время публикации поста: {post.scheduled_time}\n'}
         unpin = {True: f'Пост будет откреплён: {post.unpin_time}\n', False: 'Пост не будет закреплён\n'}
         text+=published[post.is_published]+unpin[post.unpin_time is not None]+f'Пост будет удалён: {post.delete_time}'
@@ -105,8 +126,9 @@ async def delete_scheduled_post(message: Message, bot: Bot, chat_id):
     try:
         post_id = int(message.text.split()[1])
         post = await req.get_scheduled_post(post_id)
+        target_chat = getattr(post, 'chat_id', None) or chat_id
         if post.is_published:
-            await bot.delete_messages(chat_id, post.message_ids)
+            await bot.delete_messages(target_chat, post.message_ids)
         a = await req.delete_scheduled_post(post_id)
         if a:
             await message.answer('Пост успешно удалён')
@@ -121,6 +143,7 @@ async def pin_post(message: Message, bot: Bot, chat_id, scheduler):
     try:
         m_text = message.text.split()
         post = await req.get_scheduled_post(int(m_text[1]))
+        target_chat = getattr(post, 'chat_id', None) or chat_id
         if len(message.text.split()) >= 3:
             unpin = ' '.join(m_text[2:])
         else:
@@ -129,7 +152,8 @@ async def pin_post(message: Message, bot: Bot, chat_id, scheduler):
         await req.add_or_update_scheduled_post(content_type=post.content_type, unpin_time=unpin, post_id=post.id,
                                                is_published=post.is_published)
         if post.is_published:
-            await update_unpin_or_delete_task(bot, chat_id, scheduler)
+            await update_unpin_or_delete_task(bot, target_chat, scheduler)
+        await message.answer('Настройки закрепа обновлены')
     except Exception:
         await message.answer('Не удалось закрепить пост')
 
@@ -262,8 +286,6 @@ async def get_unpin_time(message: Message, state: FSMContext):
         elif message.text.lower() == '/stop':
             unpin_time_moscow = None
         else:
-            #unpin_time_moscow -= data['scheduled_time_moscow']
-            #unpin_time_moscow = unpin_time_moscow.days*24*60*60+unpin_time_moscow.seconds
             unpin_time_moscow = datetime.strptime(message.text, "%H:%M %d-%m-%Y")
             if unpin_time_moscow <= data['scheduled_time_moscow']:
                 await message.reply("Время открепления должно быть позже времени публикации.")

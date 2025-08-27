@@ -25,11 +25,11 @@ dp.message.middleware(AlbumMiddleware())
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
 
-@dp.message(CommandStart())
-async def start(message: Message):  # потом надо текст придумать
-    await message.answer(
-        '/menu'
-    )
+# @dp.message(CommandStart())
+# async def start(message: Message):  # потом надо текст придумать
+#     await message.answer(
+#         '/menu'
+#     )
 
 
 @dp.message(Command('pin_post'))  # /pin_post [id] date[HH:MM DD-MM-YYYY]
