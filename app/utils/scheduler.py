@@ -77,7 +77,8 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
         raise ValueError("Неверный тип контента")
     if not notification:
         m = [msg] if type(msg) is not list else msg
-        await req.add_last_message_time(datetime.now())
+        if post.chat_id == int(os.getenv('MAIN_CHAT_ID')):
+            await req.add_last_message_time(datetime.now())
         if isinstance(post, ScheduledPost):
             await req.add_or_update_scheduled_post(
                 post.content_type,
