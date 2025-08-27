@@ -24,6 +24,8 @@ class PendingPost(Base):
     text: Mapped[str] = mapped_column()
     photo_file_ids = mapped_column(JSON, default=list)
     media_group_id: Mapped[int] = mapped_column()
+    # Новое: целевой чат для публикации
+    chat_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class ScheduledPost(Base):
@@ -38,6 +40,8 @@ class ScheduledPost(Base):
     message_ids: Mapped[list] = mapped_column(JSON, default=list)
     unpin_time = mapped_column(DateTime, default=None, nullable=True)
     delete_time = mapped_column(DateTime, default=None, nullable=True)
+    # Новое: целевой чат для публикации
+    chat_id: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class PostIsPinned(Base):
@@ -56,4 +60,15 @@ class Admin(Base):
 
 async def async_main():
     async with engine.begin() as conn:
+        # Создаём таблицы, если их нет
         await conn.run_sync(Base.metadata.create_all)
+        # Простейшая "миграция" для добавления chat_id, если столбца ещё нет
+        try:
+            for table in ('pending_posts', 'scheduled_posts'):
+                res = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
+                cols = [row[1] for row in res.fetchall()]  # 1-й индекс = имя колонки
+                if 'chat_id' not in cols:
+                    await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN chat_id BIGINT DEFAULT 0")
+        except Exception:
+            # Игнорируем, если БД не SQLite или столбец уже есть
+            pass

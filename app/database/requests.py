@@ -43,12 +43,13 @@ async def delete_last_messages():
         await session.commit()
 
 
-async def add_or_update_pending_post(content_type: str, text: str, photo_file_ids: list[str], media_group_id: int = 0):
+async def add_or_update_pending_post(content_type: str, text: str, photo_file_ids: list[str], media_group_id: int = 0, chat_id: int | None = None):
     post = PendingPost(
         content_type=content_type,
         text=text,
         photo_file_ids=photo_file_ids,
-        media_group_id=media_group_id if media_group_id else 0
+        media_group_id=media_group_id if media_group_id else 0,
+        chat_id=chat_id or int(os.getenv('CHANNEL_ID', 0))
     )
 
     async with async_session() as session:
@@ -64,6 +65,8 @@ async def add_or_update_pending_post(content_type: str, text: str, photo_file_id
                 # Обновляем существующий: добавляем новые file_ids
                 existing.photo_file_ids.extend(photo_file_ids)
                 existing.text = text or existing.text  # Сохраняем caption, если новый
+                if chat_id:
+                    existing.chat_id = chat_id
                 session.add(existing)
             else:
                 session.add(post)
@@ -95,7 +98,8 @@ async def add_or_update_scheduled_post(
     message_ids: list | None = None,
     unpin_time: datetime | None = None,
     delete_time: datetime | None = None,
-    post_id: int = 0
+    post_id: int = 0,
+    chat_id: int | None = None
 ):
     if message_ids is None:
         message_ids = []
@@ -111,6 +115,7 @@ async def add_or_update_scheduled_post(
         message_ids=message_ids.copy(),
         unpin_time=unpin_time,
         delete_time=delete_time,
+        chat_id=chat_id or int(os.getenv('CHANNEL_ID', 0))
     )
 
     async with async_session() as session:
@@ -139,6 +144,7 @@ async def add_or_update_scheduled_post(
                 existing.message_ids = message_ids.copy() or existing.message_ids
                 existing.unpin_time = unpin_time or existing.unpin_time
                 existing.delete_time = delete_time or existing.delete_time
+                existing.chat_id = chat_id or existing.chat_id
 
                 session.add(existing)
             else:

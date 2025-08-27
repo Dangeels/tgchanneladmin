@@ -27,11 +27,12 @@ async def handle_missed_tasks(bot: Bot, channel_id: int | str, scheduler):
         unpin_time = make_aware(post.unpin_time, msk_tz) if post.unpin_time else None
         delete_time = make_aware(post.delete_time, msk_tz) if post.delete_time else None
         msg = post.message_ids
-        is_pinned = await req.get_pin_info(post.message_ids[0])
+        is_pinned = await req.get_pin_info(post.message_ids[0]) if post.message_ids else False
+        target_chat = post.chat_id or channel_id
         # Проверка и выполнение missed unpin
         if unpin_time and now >= unpin_time and is_pinned:  # Предполагаем поле is_unpinned в модели
             try:
-                await unpin_after_duration(bot, channel_id, msg[0])  # Выполняем открепление
+                await unpin_after_duration(bot, target_chat, msg[0])  # Выполняем открепление
                 await notification_admins(bot, os.getenv('NOTIFICATION_CHAT'), post, 'unpin')  # Уведомление
                 logger.info(f"Performed missed unpin for post {post.id}")
             except Exception as e:
@@ -39,7 +40,7 @@ async def handle_missed_tasks(bot: Bot, channel_id: int | str, scheduler):
         # Проверка и выполнение missed delete
         if delete_time and now >= delete_time:  # Предполагаем поле is_deleted
             try:
-                await bot.delete_messages(channel_id, msg)  # Удаление сообщений
+                await bot.delete_messages(target_chat, msg)  # Удаление сообщений
                 await delete_scheduled_post(post.id)  # Удаление из БД
                 await notification_admins(bot, os.getenv('NOTIFICATION_CHAT'), post, 'delete')  # Уведомление
                 logger.info(f"Performed missed delete for post {post.id}")
@@ -50,7 +51,9 @@ async def handle_missed_tasks(bot: Bot, channel_id: int | str, scheduler):
             await update_unpin_or_delete_task(bot, channel_id, scheduler)  # Ваша функция для добавления jobs
 
 
-def make_aware(dt: datetime, tz: pytz.timezone) -> datetime:
+def make_aware(dt: datetime, tz: pytz.timezone) -> datetime | None:
+    if dt is None:
+        return None
     if dt.tzinfo is None:
         return tz.localize(dt)
     else:
@@ -58,16 +61,18 @@ def make_aware(dt: datetime, tz: pytz.timezone) -> datetime:
 
 
 async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost, notification: bool = False):
+    # Если это уведомление — всегда шлём в указанный chat_id, иначе используем chat_id поста
+    target_chat = chat_id if notification else (getattr(post, 'chat_id', None) or chat_id)
     if post.content_type == 'text':
-        msg = await bot.send_message(chat_id, str(post.text))
+        msg = await bot.send_message(target_chat, str(post.text))
     elif post.content_type == 'photo' and post.photo_file_ids:
         if len(post.photo_file_ids) == 1:
-            msg = await bot.send_photo(chat_id, post.photo_file_ids[0], caption=str(post.text))
+            msg = await bot.send_photo(target_chat, post.photo_file_ids[0], caption=str(post.text))
         else:
             media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
             if post.text:
                 media[0].caption = post.text  # Caption только для первого
-            msg = await bot.send_media_group(chat_id, media)
+            msg = await bot.send_media_group(target_chat, media)
     else:
         raise ValueError("Неверный тип контента")
     if not notification:
@@ -125,7 +130,7 @@ async def scheduler_task(bot: Bot, channel_id: int, scheduler):
         post.scheduled_time = make_aware(post.scheduled_time, msk_tz)
         if post.scheduled_time > now or post.is_published:
             continue
-        await post_content(bot, channel_id, post)
+        await post_content(bot, post.chat_id or channel_id, post)
         await asyncio.sleep(5)
         await update_unpin_or_delete_task(bot, channel_id, scheduler)
 
@@ -147,10 +152,11 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
 
         first_msg_id = msg[0]
         is_pinned = await req.get_pin_info(first_msg_id)
+        target_chat = post.chat_id or channel_id
         # 1) Пин разрешён ТОЛЬКО если время открепления ещё не наступило
         if unpin_time and now < unpin_time and not is_pinned:
             try:
-                await bot.pin_chat_message(channel_id, first_msg_id, disable_notification=True)
+                await bot.pin_chat_message(target_chat, first_msg_id, disable_notification=True)
                 await req.set_pin_info(first_msg_id, True)  # фиксируем только после успеха
             except Exception as e:
                 logger.error(f"Не удалось закрепить сообщение {first_msg_id}: {e}")
@@ -167,7 +173,7 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
                 scheduler.add_job(
                     unpin_after_duration,
                     trigger=DateTrigger(run_date=post.unpin_time),
-                    args=[bot, channel_id, msg[0]],
+                    args=[bot, target_chat, msg[0]],
                     id=f'unpin_{post.id}',
                     replace_existing=True
                 )
@@ -192,7 +198,7 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
                 scheduler.add_job(
                     bot.delete_messages,
                     trigger=DateTrigger(run_date=post.delete_time),
-                    args=[channel_id, msg],
+                    args=[target_chat, msg],
                     id=f'delete_{post.id}',
                     replace_existing=True
                 )
@@ -232,5 +238,5 @@ async def pending_task(bot: Bot, channel_id: int):
             pending_posts = await get_pending_posts()
             if pending_posts:
                 post = random.choice(pending_posts)
-                await post_content(bot, channel_id, post)
+                await post_content(bot, getattr(post, 'chat_id', None) or channel_id, post)
                 await delete_pending_post(post.id)
