@@ -61,8 +61,8 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     dp.include_routers(router, router1, menu_router)
-    await handle_missed_tasks(bot, os.getenv('CHANNEL_ID'), scheduler)
     await async_main()
+    await handle_missed_tasks(bot, os.getenv('CHANNEL_ID'), scheduler)
     await dp.start_polling(bot)
 
 
