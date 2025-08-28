@@ -43,9 +43,9 @@ async def command_delete_post(message: Message):
 
 
 async def on_startup(dispatcher):
-    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID'), scheduler],
+    scheduler.add_job(scheduler_task, "interval", minutes=1, args=[bot, os.getenv('MAIN_CHAT_ID'), scheduler],
                       id='scheduler_task', replace_existing=True)
-    scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('CHANNEL_ID')],
+    scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('MAIN_CHAT_ID')],
                       id='pending_task', replace_existing=True)
     scheduler.start()
     print("Планировщик запущен")
@@ -62,7 +62,7 @@ async def main():
     dp.shutdown.register(on_shutdown)
     dp.include_routers(router, router1, menu_router)
     await async_main()
-    await handle_missed_tasks(bot, os.getenv('CHANNEL_ID'), scheduler)
+    await handle_missed_tasks(bot, os.getenv('MAIN_CHAT_ID'), scheduler)
     await dp.start_polling(bot)
 
 
