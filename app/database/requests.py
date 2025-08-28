@@ -49,7 +49,7 @@ async def add_or_update_pending_post(content_type: str, text: str, photo_file_id
         text=text,
         photo_file_ids=photo_file_ids,
         media_group_id=media_group_id if media_group_id else 0,
-        chat_id=chat_id or int(os.getenv('CHANNEL_ID', 0))
+        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0))
     )
 
     async with async_session() as session:

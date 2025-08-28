@@ -33,7 +33,7 @@ async def handle_missed_tasks(bot: Bot, channel_id: int | str, scheduler):
         if unpin_time and now >= unpin_time and is_pinned:  # Предполагаем поле is_unpinned в модели
             try:
                 await unpin_after_duration(bot, target_chat, msg[0])  # Выполняем открепление
-                await notification_admins(bot, os.getenv('NOTIFICATION_CHAT'), post, 'unpin')  # Уведомление
+                #await notification_admins(bot, os.getenv('NOTIFICATION_CHAT'), post, 'unpin')  # Уведомление
                 logger.info(f"Performed missed unpin for post {post.id}")
             except Exception as e:
                 logger.error(f"Error performing missed unpin for post {post.id}: {e}")
