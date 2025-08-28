@@ -178,6 +178,14 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
         text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
         media_group_id = album[0].media_group_id
+        # Валидация длины текста
+        max_len = 1024 if file_ids else 4096
+        if len(text or '') > max_len:
+            await message.answer(
+                f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
+                f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
+            )
+            return
         await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id)
     else:
         # Одиночное сообщение
@@ -192,6 +200,15 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
             file_ids = [message.photo[-1].file_id]
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
+            return
+
+        # Валидация длины текста
+        max_len = 1024 if file_ids else 4096
+        if len(text or '') > max_len:
+            await message.answer(
+                f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
+                f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
+            )
             return
 
         await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id)
@@ -223,6 +240,14 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
         text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
         media_group_id = album[0].media_group_id
+        # Валидация длины текста
+        max_len = 1024 if file_ids else 4096
+        if len(text or '') > max_len:
+            await message.answer(
+                f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
+                f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
+            )
+            return
         await state.update_data(
             content_type=content_type,
             text=text,
@@ -242,6 +267,15 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
             file_ids = [message.photo[-1].file_id]
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
+            return
+
+        # Валидация длины текста
+        max_len = 1024 if file_ids else 4096
+        if len(text or '') > max_len:
+            await message.answer(
+                f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
+                f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
+            )
             return
 
         await state.update_data(

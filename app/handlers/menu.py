@@ -549,6 +549,17 @@ async def process_post_content(message: Message, state: FSMContext, bot: Bot, al
             await message.answer("Пожалуйста, отправьте текст или фото.", reply_markup=kb.as_markup())
             return
 
+    # Валидация длины текста: 1024 с медиа, 4096 без медиа
+    max_len = 1024 if file_ids else 4096
+    if len(text or '') > max_len:
+        kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
+        await message.reply(
+            f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
+            f"Сейчас: {len(text or '')} символов. Пожалуйста, сократите и отправьте заново.",
+            reply_markup=kb.as_markup()
+        )
+        return
+
     # Проверка хэштега (регистронезависимо)
     if required_hashtag.lower() not in (text or '').lower():
         kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)

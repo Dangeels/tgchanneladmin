@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import random
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
+from aiogram.exceptions import TelegramBadRequest  # NEW
 from app.database.requests import get_pending_posts, delete_pending_post, get_scheduled_posts, delete_scheduled_post
 import app.database.requests as req
 import pytz
@@ -63,18 +64,49 @@ def make_aware(dt: datetime, tz: pytz.timezone) -> datetime | None:
 async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost, notification: bool = False):
     # Если это уведомление — всегда шлём в указанный chat_id, иначе используем chat_id поста
     target_chat = chat_id if notification else (getattr(post, 'chat_id', None) or chat_id)
-    if post.content_type == 'text':
-        msg = await bot.send_message(target_chat, str(post.text))
-    elif post.content_type == 'photo' and post.photo_file_ids:
-        if len(post.photo_file_ids) == 1:
-            msg = await bot.send_photo(target_chat, post.photo_file_ids[0], caption=str(post.text))
+    text = str(getattr(post, 'text', '') or '')
+    # NEW: Проверка лимитов до отправки; если нарушены — не публикуем
+    try:
+        if post.content_type == 'text':
+            if len(text) > 4096:
+                logger.warning(f"Skip publish: text too long ({len(text)} > 4096). post_id={getattr(post, 'id', None)}")
+                # уведомление админам (если это не служебное уведомление)
+                notif_chat = os.getenv('NOTIFICATION_CHAT') or os.getenv('ADMIN_CHAT_ID')
+                if notif_chat and not notification:
+                    await bot.send_message(int(notif_chat), f"Пост id={getattr(post, 'id', None)} не опубликован: превышен лимит 4096 символов.")
+                return
+            msg = await bot.send_message(target_chat, text)
+
+        elif post.content_type == 'photo' and post.photo_file_ids:
+            if len(text) > 1024:
+                logger.warning(f"Skip publish: caption too long ({len(text)} > 1024). post_id={getattr(post, 'id', None)}")
+                notif_chat = os.getenv('NOTIFICATION_CHAT') or os.getenv('ADMIN_CHAT_ID')
+                if notif_chat and not notification:
+                    await bot.send_message(int(notif_chat), f"Пост id={getattr(post, 'id', None)} не опубликован: превышен лимит 1024 символов для подписи.")
+                return
+            if len(post.photo_file_ids) == 1:
+                msg = await bot.send_photo(target_chat, post.photo_file_ids[0], caption=text or None)
+            else:
+                media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
+                if text:
+                    media[0].caption = text  # Caption только для первого
+                msg = await bot.send_media_group(target_chat, media)
         else:
-            media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
-            if post.text:
-                media[0].caption = post.text  # Caption только для первого
-            msg = await bot.send_media_group(target_chat, media)
-    else:
-        raise ValueError("Неверный тип контента")
+            raise ValueError("Неверный тип контента")
+
+    except TelegramBadRequest as e:
+        logger.error(f"TelegramBadRequest while posting content (post id={getattr(post, 'id', None)}): {e}")
+        try:
+            notif_chat = os.getenv('NOTIFICATION_CHAT') or os.getenv('ADMIN_CHAT_ID')
+            if notif_chat and not notification:
+                await bot.send_message(int(notif_chat), f"Не удалось опубликовать пост id={getattr(post, 'id', None)}: {e}")
+        except Exception as e2:
+            logger.error(f"Failed to notify about bad request: {e2}")
+        return
+    except Exception as e:
+        logger.exception(f"Unexpected error while posting content (post id={getattr(post, 'id', None)}): {e}")
+        return
+
     if not notification:
         m = [msg] if type(msg) is not list else msg
         if post.chat_id == int(os.getenv('MAIN_CHAT_ID')):
