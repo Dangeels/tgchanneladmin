@@ -98,27 +98,31 @@ async def unpin_after_duration(bot: Bot, chat_id: int, message_id: int):
 
 
 async def notification_admins(bot: Bot, chat_id: int | str, post: ScheduledPost, notification: str):
-    await post_content(bot, chat_id, post, notification=True)
     msk_tz = pytz.timezone("Europe/Moscow")
     now = datetime.now(msk_tz)
     text = f'id поста: {post.id}\n'
     dct = {}
     if post.unpin_time:
         post.unpin_time = make_aware(post.unpin_time, msk_tz)
-        if (post.unpin_time-now).days <= 3:
-            dct['unpin'] = (f'Пост будет будет откреплён через 3 дня: {post.unpin_time}\n'
-                            f'Изменить время открепления можно командой /pin_post, как её использовать указано в /help')
         if now >= post.unpin_time:
             dct['unpin'] = f'Пост {post.id} был откреплён'
+        elif (post.unpin_time - now).days <= 3:
+            dct['unpin'] = (f'Пост будет откреплён через 3 дня или менее: {post.unpin_time}\n'
+                            f'Изменить время открепления можно командой /pin_post, как её использовать указано в /help')
+
     if post.delete_time:
         post.delete_time = make_aware(post.delete_time, msk_tz)
-        if (post.delete_time - now).days <= 3:
-            dct['delete'] = (f'Пост будет будет удалён через 3 дня: {post.delete_time}\n'
-                             f'После удаления из чата он также будет удалён из базы данных')
         if now >= post.delete_time:
             dct['delete'] = f'Пост был удалён'
-    text += dct[notification]
-    await bot.send_message(chat_id, text=text)
+        elif (post.delete_time - now).days <= 3:
+            dct['delete'] = (f'Пост будет удалён через 3 дня или менее: {post.delete_time}\n'
+                             f'После удаления из чата он также будет удалён из базы данных')
+
+    # Проверяем, есть ли соответствующее уведомление в словаре
+    if notification in dct:
+        await post_content(bot, chat_id, post, notification=True)
+        text += dct[notification]
+        await bot.send_message(chat_id, text=text)
 
 
 async def scheduler_task(bot: Bot, channel_id: int, scheduler):
@@ -166,7 +170,7 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
             try:
                 scheduler.add_job(
                     notification_admins,
-                    trigger=DateTrigger(run_date=post.unpin_time-timedelta(days=3)),
+                    trigger=DateTrigger(run_date=post.unpin_time-timedelta(days=2, hours=23)),
                     args=[bot, os.getenv('NOTIFICATION_CHAT'), post, 'unpin'],
                     id=f'notify_unpin_3_{post.id}',
                     replace_existing=True
@@ -191,7 +195,7 @@ async def update_unpin_or_delete_task(bot: Bot, channel_id: int | str, scheduler
             try:
                 scheduler.add_job(
                     notification_admins,
-                    trigger=DateTrigger(run_date=post.delete_time - timedelta(days=3)),
+                    trigger=DateTrigger(run_date=post.delete_time - timedelta(days=2, hours=23)),
                     args=[bot, os.getenv('NOTIFICATION_CHAT'), post, 'delete'],
                     id=f'notify_3_delete_{post.id}',
                     replace_existing=True
