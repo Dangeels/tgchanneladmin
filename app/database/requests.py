@@ -115,7 +115,7 @@ async def add_or_update_scheduled_post(
         message_ids=message_ids.copy(),
         unpin_time=unpin_time,
         delete_time=delete_time,
-        chat_id=chat_id or int(os.getenv('CHANNEL_ID', 0))
+        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0))
     )
 
     async with async_session() as session:
