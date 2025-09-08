@@ -7,7 +7,7 @@ import random
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
 from aiogram.exceptions import TelegramBadRequest  # NEW
-from app.database.requests import get_pending_posts, delete_pending_post, get_scheduled_posts, delete_scheduled_post
+from app.database.requests import get_pending_posts, delete_pending_post, get_scheduled_posts, delete_scheduled_post, get_active_broadcast_posts, update_broadcast_run
 import app.database.requests as req
 import pytz
 from app.database.models import ScheduledPost, PendingPost
@@ -277,3 +277,124 @@ async def pending_task(bot: Bot, channel_id: int):
                 post = random.choice(pending_posts)
                 await post_content(bot, getattr(post, 'chat_id', None) or channel_id, post)
                 await delete_pending_post(post.id)
+
+
+async def broadcast_task(bot: Bot, scheduler):
+    """Рассылка broadcast-постов с поддержкой режимов full/limited и дневного окна.
+    Алгоритм:
+    - Берём активные кампании.
+    - Для каждой: если истёк end_time -> деактивируем.
+    - Иначе догоняем отставание: вычисляем сколько интервалов пропущено.
+      Для режима limited публикация допускается только если время next_run попадает в окно активности.
+      Если нет — переносим next_run на ближайшее начало окна.
+    - Ограничение защиты от шторма: максимум 200 публикаций за один проход для кампании.
+    """
+    from app.database.requests import get_active_broadcast_posts, update_broadcast_run, get_broadcast_config
+    try:
+        msk_tz = pytz.timezone("Europe/Moscow")
+        now = datetime.now(msk_tz)
+        cfg = await get_broadcast_config()
+        broadcasts = await get_active_broadcast_posts()
+        for bp in broadcasts:
+            # helper to localize
+            def aware(dt):
+                if dt is None:
+                    return None
+                if dt.tzinfo is None:
+                    return msk_tz.localize(dt)
+                return dt.astimezone(msk_tz)
+            next_run = aware(bp.next_run_time)
+            end_time = aware(bp.end_time)
+            if not next_run or not end_time:
+                continue
+            if now > end_time:
+                await update_broadcast_run(bp.id, None, last_run_time=now.replace(tzinfo=None), deactivate=True)
+                continue
+            # Параметры окна
+            mode = getattr(bp, 'mode', 'full') or 'full'
+            start_min = getattr(bp, 'active_start_min', 9*60)
+            end_min = getattr(bp, 'active_end_min', 23*60)
+            # Если режим limited и глобальная конфигурация выключена (enabled=False), трактуем как full
+            if mode == 'limited' and cfg and not cfg.enabled:
+                mode = 'full'
+            # Функция проверки окна
+            def in_window(dt: datetime):
+                if mode != 'limited':
+                    return True
+                mins = dt.hour * 60 + dt.minute
+                if start_min <= end_min:
+                    return start_min <= mins < end_min
+                # Ночной пролёт через полночь (редкий сценарий)
+                return mins >= start_min or mins < end_min
+            # Функция: сдвинуть dt к ближайшему началу окна если вне окна
+            def align_to_window(dt: datetime):
+                if mode != 'limited':
+                    return dt
+                if in_window(dt):
+                    return dt
+                # вычисляем локальную дату и строим точку старта окна
+                # текущий день
+                day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                candidate = day_start + timedelta(minutes=start_min)
+                if dt < candidate:
+                    return candidate
+                # если уже после окна — перенос на следующий день начало окна
+                return candidate + timedelta(days=1)
+            # Если первая публикация ещё не в окне — подравниваем но не считаем публикацией
+            if not in_window(next_run):
+                aligned = align_to_window(next_run)
+                if aligned > end_time:
+                    await update_broadcast_run(bp.id, None, last_run_time=now.replace(tzinfo=None), deactivate=True)
+                    continue
+                await update_broadcast_run(bp.id, aligned.replace(tzinfo=None), last_run_time=(bp.last_run_time or next_run).replace(tzinfo=None))
+                continue
+            interval = timedelta(minutes=bp.interval_minutes)
+            # Вычисляем сколько интервалов пропущено (если next_run << now)
+            if now > next_run:
+                diff = now - next_run
+                missed = int(diff // interval)
+            else:
+                missed = 0
+            # Публикуем пока next_run <= now (catch-up) плюс одна текущая если ровно совпало
+            iterations = 0
+            max_iterations = 200  # защита
+            while next_run <= now and next_run <= end_time and iterations < max_iterations:
+                if not in_window(next_run):
+                    # перенос в окно и выходим из цикла catch-up (дальнейшие публикации позже)
+                    next_run = align_to_window(next_run)
+                    break
+                # Формируем временный объект
+                class _Tmp:
+                    pass
+                tmp = _Tmp()
+                tmp.content_type = bp.content_type
+                tmp.text = bp.text
+                tmp.photo_file_ids = bp.photo_file_ids or []
+                tmp.chat_id = bp.chat_id
+                tmp.id = f"broadcast:{bp.id}"
+                try:
+                    await post_content(bot, bp.chat_id, tmp)
+                except Exception as e:
+                    logger.error(f"Ошибка публикации broadcast {bp.id}: {e}")
+                    break
+                last_run_time = next_run
+                # Следующее время
+                next_run = next_run + interval
+                # Выравниваем для limited если вне окна
+                if not in_window(next_run):
+                    next_run = align_to_window(next_run)
+                iterations += 1
+                if next_run > end_time:
+                    await update_broadcast_run(bp.id, None, last_run_time=last_run_time.replace(tzinfo=None), deactivate=True)
+                    break
+            else:
+                # Если цикл завершился без деактивации
+                if next_run <= end_time:
+                    await update_broadcast_run(
+                        bp.id,
+                        next_run.replace(tzinfo=None),
+                        last_run_time=(last_run_time if 'last_run_time' in locals() else (bp.last_run_time or next_run)).replace(tzinfo=None),
+                        deactivate=False
+                    )
+    except Exception as e:
+        logger.exception(f"broadcast_task fatal error: {e}")

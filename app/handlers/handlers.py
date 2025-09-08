@@ -1,7 +1,6 @@
-import asyncio
 import os
-from aiogram import Router, F, Bot
-from aiogram.filters import Command, CommandStart
+from aiogram import Router, Bot
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, InputMediaPhoto
@@ -9,7 +8,7 @@ import app.database.requests as req
 from datetime import datetime, timedelta
 from app.handlers.admin_handlers import is_admin
 from app.utils.scheduler import update_unpin_or_delete_task
-import pytz
+
 
 router = Router()
 
@@ -19,26 +18,49 @@ async def help_command(message: Message):
     x = await is_admin(message.from_user.username)
     if message.chat.type != 'private' or not x[0]:
         return
-    help_text = """
-Помощь по боту для администрирования Telegram-канала
-Этот бот помогает управлять постами в канале: добавлять в очередь, планировать публикации и т.д. Доступны только для администраторов.
-Доступные команды:
-- /pending: Добавить пост в очередь на публикацию.
-- /schedule: Добавить пост и опубликовать сразу/запланировать публикацию на определённое время (в формате HH:MM DD-MM-YYYY, часовой пояс Москвы).
-- /pin_post [id] date[HH:MM DD-MM-YYYY]: Закрепить уже опубликованный пост или добавить закрепление для запланированного поста, где дата - время открепления поста, если его не указывать, пост будет закреплён навсегда
-- /all_pending_posts: Показать все посты в очереди на публикацию (с указанием chat_id)
-- /all_scheduled_posts: Показать все посты с определённым временем публикации (с указанием chat_id)
-- /delete_pending_post [id]: Удалить определённый пост из очереди по id поста
-- /delete_scheduled_post [id]: Удалить из базы данных определённый пост с назначенным временем публикации по id поста, если пост уже опубликован, он также будет удалён
-- /chats: Показать все актуальные chat_id из настроек
+    help_text = (
+"""
+Помощь (админ)
+Основные пользовательские функции теперь доступны через /menu (там же пункт Рассылка).
 
-- /all_admins - получить список всех администраторов 
-- /set_admin @username - добавить нового администратора
-- /delete_admin @username - удалить администратора
+Команды управления постами:
+/pending – добавить пост в очередь.
+/schedule – запланировать публикацию.
+/all_pending_posts – показать очередь.
+/all_scheduled_posts – показать запланированные.
+/delete_pending_post <id> – удалить из очереди.
+/delete_scheduled_post <id> – удалить запланированный (и из чата, если уже опубликован).
+/pin_post <id> [HH:MM DD-MM-YYYY] – (пере)закрепить; если время не указано – навсегда (до 31-12-2200).
+/chats – показать текущие chat_id из .env.
 
-- /help: Показать эту справку.
-    """
+Администраторы:
+/all_admins – список админов.
+/set_admin @username – добавить админа.
+/delete_admin @username – удалить админа (при достаточных правах).
 
+Рассылки (broadcast) – повторная публикация поста по интервалу в бесплатный чат:
+/broadcast_list – список рассылок (ID, статус, режим, окно, next, end).
+/broadcast_stop <id> – остановить кампанию.
+/broadcast_mode <id> <full|limited> – сменить режим.
+/broadcast_window <id> HH:MM-HH:MM – локальное дневное окно кампании (автоматически ставит limited).
+/broadcast_global_window HH:MM-HH:MM – включить/обновить глобальное окно для всех limited без локального.
+/broadcast_global_off – отключить глобальное окно (limited без локального работает как full).
+/broadcast_manual <interval_minutes> <start HH:MM_DD-MM-YYYY|now> <end HH:MM_DD-MM-YYYY> <full|limited> [HH:MM-HH:MM]
+  Пример: /broadcast_manual 120 now 23:00_10-09-2025 limited 09:00-23:00
+
+Режимы:
+ full – публикация 24/7.
+ limited – только внутри окна (локального или глобального). Если оба отключены – работает как full.
+
+Окна (ночной режим):
+- Локальное (per campaign) через /broadcast_window.
+- Глобальное через /broadcast_global_window.
+- Если limited и нет активного окна – будет выбран full.
+
+
+Эта справка предназначена только для админов. Для обычных пользователей /menu.
+"""
+    )
     await message.answer(help_text)
 
 
@@ -186,7 +208,7 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
                 f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
             )
             return
-        await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id)
+        await req.add_or_update_pending_post(content_type, text, file_ids, int(media_group_id))
     else:
         # Одиночное сообщение
         media_group_id = message.media_group_id or 0

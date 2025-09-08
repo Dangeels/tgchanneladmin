@@ -44,6 +44,28 @@ class Purchase(StatesGroup):
 class AdminReject(StatesGroup):
     waiting_reason = State()
 
+# Define FSM states for the broadcast process
+class Broadcast(StatesGroup):
+    waiting_start_time = State()
+    waiting_post = State()
+    waiting_check = State()
+
+BROADCAST_INTERVALS = {
+    '15m': 15,
+    '30m': 30,
+    '1h': 60,
+    '2h': 120,
+    '3h': 180
+}
+
+BROADCAST_DURATIONS = {
+    '1w': 7*24*60,
+    '2w': 14*24*60,
+    '1m': 30*24*60,
+    '2m': 60*24*60,
+    '3m': 90*24*60
+}
+
 # Define CallbackData factory for menu navigation
 class MenuCallback(CallbackData, prefix="menu"):
     level: str  # e.g., 'main', 'sub', 'extra', 'subextra', 'toggle', 'buy', 'cancel'
@@ -360,20 +382,18 @@ async def command_menu(message: Message, state: FSMContext):
     if message.chat.type != 'private':
         return
     await state.clear()
-    # Приветственный текст с ссылками
     intro = (
         "Добро пожаловать! Ниже — быстрые ссылки на наши площадки:\n"
         f"• Основной чат: {LINKS['main']}\n"
         f"• Премиум-канал: {LINKS['premium']}\n"
         f"• Бесплатный чат: {LINKS['free']}\n"
         f"• Чат с отзывами: {LINKS['reviews']}\n\n"
-        "Выберите категорию.\n"
-        "Важно: указывайте верный статус (Фрилансер/Работодатель) — объявления проходят модерацию и при неверном выборе могут быть отклонены."
+        "Выберите тип услуги."
     )
     builder = InlineKeyboardBuilder()
-    builder.button(text="А) Для работодателей", callback_data=MenuCallback(level="sub", user_type="employer").pack())
-    builder.button(text="Б) Для фрилансеров", callback_data=MenuCallback(level="sub", user_type="freelancer").pack())
-    builder.adjust(1)  # One button per row
+    builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
+    builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+    builder.adjust(1)
     builder = add_contact_button(builder)
     await message.answer(intro, reply_markup=builder.as_markup())
 
@@ -477,11 +497,11 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
     elif level == "main":
         await state.clear()
         builder = InlineKeyboardBuilder()
-        builder.button(text="А) Для работодателей", callback_data=MenuCallback(level="sub", user_type="employer").pack())
-        builder.button(text="Б) Для фрилансеров", callback_data=MenuCallback(level="sub", user_type="freelancer").pack())
+        builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
+        builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
         builder.adjust(1)
         builder = add_contact_button(builder)
-        await query.message.edit_text("Выберите категорию:", reply_markup=builder.as_markup())
+        await query.message.edit_text("Главное меню. Выберите действие:", reply_markup=builder.as_markup())
 
     elif level == "cancel":
         data = await state.get_data()
@@ -490,143 +510,156 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
             await bot.edit_message_text(chat_id=query.from_user.id, message_id=waiting_msg_id, text="Покупка отменена.", reply_markup=None)
         await state.clear()
 
-# Handler for payment check photo
-@menu_router.message(Purchase.waiting_check, F.photo)
-async def process_check_photo(message: Message, state: FSMContext, bot: Bot):
-    photo_id = message.photo[-1].file_id  # Get the highest resolution photo
-    await state.update_data(check_photo=photo_id)
-    data = await state.get_data()
-    waiting_msg_id = data.get('waiting_msg_id')
-    if waiting_msg_id:
-        # остаёмся без кнопок на этапе оплаты
-        await bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg_id, text="Чек получен.", reply_markup=None)
-
-    user_type = data.get('user_type')
-    hashtag = '#ищу' if user_type == 'employer' else '#помогу'
-
-    # Следующий шаг (отправка поста) — показываем кнопку контакта и правила по хэштегам
-    kb = InlineKeyboardBuilder()
-    kb = add_contact_button(kb)
-    post_rules_text = (
-        "Теперь отправьте пост, который хотите опубликовать.\n\n"
-        "<b>Важно:</b>\n"
-        f"• Ваш пост должен содержать обязательный хэштег: <code>{'#ищу' if user_type == 'employer' else '#помогу'}</code>\n"
-        "• Правило сети по хэштегам: для фрилансера обязателен <code>#помогу</code>, для работодателя — <code>#ищу</code>.\n"
-        "• Кроме обязательного хэштега <code>#ищу</code> или <code>#помогу</code> укажите уточняющие хэштеги. "
-        "К примеру, <code>#smm</code> или <code>#менеджер</code>.\n"
-        "• Не забудьте указать свой контакт или форму в объявлении.\n"
-        "• Убедитесь, что хэштег присутствует и написан правильно."
-    )
-    await bot.send_message(message.chat.id, post_rules_text, reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
-    await state.set_state(Purchase.waiting_post)
-
-# Handler for post content
-@menu_router.message(Purchase.waiting_post)
-async def process_post_content(message: Message, state: FSMContext, bot: Bot, album: List[Message] | None = None):
-    data = await state.get_data()
-    user_type = data.get('user_type')
-    required_hashtag = '#ищу' if user_type == 'employer' else '#помогу'
-
-    if album:
-        # Обработка медиа-группы (альбома)
-        content_type = 'photo'
-        file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
-        text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
-        media_group_id = 0  # используем 0, чтобы не сохранять строковый идентификатор
-    else:
-        # Одиночное сообщение
-        media_group_id = message.media_group_id
-        if message.text:
-            content_type = 'text'
-            text = message.text
-            file_ids = []
-        elif message.photo:
-            content_type = 'photo'
-            text = message.caption or ''
-            file_ids = [message.photo[-1].file_id]
-        else:
-            kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
-            await message.answer("Пожалуйста, отправьте текст или фото.", reply_markup=kb.as_markup())
+    elif level == "root_pub":
+        await state.clear()
+        builder = InlineKeyboardBuilder()
+        builder.button(text="А) Для работодателей", callback_data=MenuCallback(level="sub", user_type="employer").pack())
+        builder.button(text="Б) Для фрилансеров", callback_data=MenuCallback(level="sub", user_type="freelancer").pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        try:
+            await query.message.edit_text("Выберите категорию:", reply_markup=builder.as_markup())
+        except Exception:
+            await bot.send_message(query.from_user.id, "Выберите категорию:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast":
+        # Корневое меню рассылки: режим, интервал, длительность, продолжить
+        data = await state.get_data()
+        sel_mode = data.get('broadcast_mode')
+        sel_interval = data.get('broadcast_interval_code')
+        sel_duration = data.get('broadcast_duration_code')
+        txt = [
+            'Настройка рассылки в бесплатный чат:',
+            f"Режим: {('не выбран' if not sel_mode else ('Полная 24/7' if sel_mode=='full' else 'Ограниченная (дневное окно)'))}",
+            f"Интервал: {sel_interval or 'не выбран'}",
+            f"Длительность: {sel_duration or 'не выбрана'}",
+            '',
+            'Шаги: выберите режим, интервал, длительность, затем нажмите Продолжить.'
+        ]
+        builder = InlineKeyboardBuilder()
+        builder.button(text=f"Режим", callback_data=MenuCallback(level="broadcast_mode_menu").pack())
+        builder.button(text=f"Интервал", callback_data=MenuCallback(level="broadcast_interval_menu").pack())
+        builder.button(text=f"Длительность", callback_data=MenuCallback(level="broadcast_duration_menu").pack())
+        if sel_mode and sel_interval and sel_duration:
+            builder.button(text="Продолжить", callback_data=MenuCallback(level="broadcast_start").pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
+        builder.adjust(2,1,1)
+        builder = add_contact_button(builder)
+        try:
+            await query.message.edit_text('\n'.join(txt), reply_markup=builder.as_markup())
+        except Exception:
+            await bot.send_message(query.from_user.id, '\n'.join(txt), reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_mode_menu":
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Полная 24/7", callback_data=MenuCallback(level="broadcast_mode", option="full").pack())
+        builder.button(text="Ограниченная", callback_data=MenuCallback(level="broadcast_mode", option="limited").pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите режим рассылки:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_mode":
+        mode = callback_data.option
+        if mode not in ("full","limited"):
+            await query.answer("Неверный режим", show_alert=True); return
+        await state.update_data(broadcast_mode=mode)
+        await query.answer("Режим выбран")
+        # Возврат к корню рассылки
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+        return
+    elif level == "broadcast_interval_menu":
+        builder = InlineKeyboardBuilder()
+        for code, mins in BROADCAST_INTERVALS.items():
+            builder.button(text=code, callback_data=MenuCallback(level="broadcast_interval", option=code).pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(3)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите интервал:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_interval":
+        interval_code = callback_data.option
+        if interval_code not in BROADCAST_INTERVALS:
+            await query.answer("Неверный интервал", show_alert=True)
             return
-
-    # Валидация длины текста: 1024 с медиа, 4096 без медиа
-    max_len = 1024 if file_ids else 4096
-    if len(text or '') > max_len:
-        kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
-        await message.reply(
-            f"Слишком длинный текст. Для постов с медиа — до 1024 символов, без медиа — до 4096 символов. "
-            f"Сейчас: {len(text or '')} символов. Пожалуйста, сократите и отправьте заново.",
-            reply_markup=kb.as_markup()
-        )
+        await state.update_data(broadcast_interval_code=interval_code, broadcast_interval=BROADCAST_INTERVALS[interval_code])
+        await query.answer("Интервал выбран")
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
         return
-
-    # Проверка хэштега (регистронезависимо)
-    if required_hashtag.lower() not in (text or '').lower():
-        kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
-        await message.reply(
-            f"Ошибка: в вашем посте отсутствует обязательный хэштег <code>{required_hashtag}</code>. "
-            f"Пожалуйста, исправьте и отправьте пост заново.",
-            reply_markup=kb.as_markup(),
-            parse_mode=ParseMode.HTML
-        )
+    elif level == "broadcast_duration_menu":
+        builder = InlineKeyboardBuilder()
+        for code, minutes in BROADCAST_DURATIONS.items():
+            builder.button(text=code, callback_data=MenuCallback(level="broadcast_duration", option=code).pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(3)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите длительность:", reply_markup=builder.as_markup())
         return
-
-    await state.update_data(content_type=content_type, text=text, file_ids=file_ids, media_group_id=media_group_id)
-
-    # Generate unique order ID
+    elif level == "broadcast_duration":
+        dur_code = callback_data.option
+        if dur_code not in BROADCAST_DURATIONS:
+            await query.answer("Неверная длительность", show_alert=True)
+            return
+        await state.update_data(broadcast_duration_code=dur_code, broadcast_duration=BROADCAST_DURATIONS[dur_code])
+        await query.answer("Длительность выбрана")
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+        return
+    elif level == "broadcast_start":
+        data = await state.get_data()
+        if not (data.get('broadcast_mode') and data.get('broadcast_interval') and data.get('broadcast_duration')):
+            await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
+            return
+        await state.set_state(Broadcast.waiting_start_time)
+        await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
+        return
+@menu_router.message(Broadcast.waiting_check, F.photo)
+async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    photo_id = message.photo[-1].file_id
     order_id = str(uuid.uuid4())
-
-    # Store order data
     pending_orders[order_id] = {
+        'order_type': 'broadcast',
         'user_id': message.from_user.id,
         'user_username': message.from_user.username,
-        'user_type': data['user_type'],
-        'option': data['option'],
-        'selected_suboptions': data['selected_suboptions'],
-        'total': data['total'],
-        'check_photo': data['check_photo'],
-        'content_type': content_type,
-        'text': text,
-        'file_ids': file_ids,
-        'media_group_id': media_group_id
+        'mode': data.get('broadcast_mode','full'),
+        'interval_minutes': data['broadcast_interval'],
+        'interval_code': data['broadcast_interval_code'],
+        'duration_code': data['broadcast_duration_code'],
+        'start_time': data['broadcast_start'],
+        'end_time': data['broadcast_end'],  # историческое имя
+        'broadcast_end': data['broadcast_end'],  # добавлено для совместимости с обработчиком подтверждения
+        'content_type': data['broadcast_content_type'],
+        'text': data['broadcast_text'],
+        'file_ids': data['broadcast_file_ids'],
+        'media_group_id': data['broadcast_media_group_id'],
+        'check_photo': photo_id
     }
-
-    # Format suboptions string
-    suboptions_str = ', '.join([f"{SUBOPTION_NAMES.get(k, k)}: {PRICES_DICT[get_suboption_key(k, data['user_type'], data['option'])][v]['text']}" for k, v in data['selected_suboptions'].items()]) if data['selected_suboptions'] else 'Нет'
-
-    # If post has photos, send them to admin first
-    if file_ids:
-        media = [InputMediaPhoto(media=file_id, caption=text if i == 0 else None, parse_mode=ParseMode.HTML) for i, file_id in enumerate(file_ids)]
-        await bot.send_media_group(ADMIN_CHAT_ID, media)
-        post_str = "Пост: опубликован выше"
-    else:
-        await bot.send_message(ADMIN_CHAT_ID, text)
-        post_str = f"Пост: опубликован выше"
-
-    # Build admin keyboard
     builder = InlineKeyboardBuilder()
+    from aiogram.utils.keyboard import InlineKeyboardButton
     builder.button(text="Подтвердить", callback_data=AdminCallback(action="confirm", order_id=order_id).pack())
     builder.button(text="Отклонить", callback_data=AdminCallback(action="reject", order_id=order_id).pack())
     builder.adjust(2)
-
-    # Send check photo with caption and buttons to admin
-    caption = (
-        f"Новый заказ #{order_id[:8]}\n"
-        f"От пользователя: @{message.from_user.username} (ID: {message.from_user.id})\n"
-        f"Тип: {data['user_type'].capitalize()}\n"
-        f"Опция: {DESCRIPTIONS[data['user_type']][data['option']].splitlines()[0]}\n"
-        f"Дополнительные опции: {suboptions_str}\n"
-        f"Сумма: {data['total']}₽\n"
-        f"{post_str}"
-    )
-    await bot.send_photo(ADMIN_CHAT_ID, photo=data['check_photo'], caption=caption, reply_markup=builder.as_markup(), parse_mode=ParseMode.HTML)
-
-    # Пользователю — ответ с кнопкой контакта
-    kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
-    await message.answer("Пост получен и отправлен на модерацию. Спасибо!", reply_markup=kb.as_markup())
+    caption = (f"Новый заказ (рассылка) #{order_id[:8]}\n"
+               f"Пользователь: @{message.from_user.username} ({message.from_user.id})\n"
+               f"Интервал: {data['broadcast_interval_code']} ({data['broadcast_interval']} мин)\n"
+               f"Длительность: {data['broadcast_duration_code']}\n"
+               f"Старт: {data['broadcast_start']}\n"
+               f"Окончание: {data['broadcast_end']}\n")
+    if data['broadcast_file_ids']:
+        media = [InputMediaPhoto(media=fid, caption=data['broadcast_text'] if i == 0 else None) for i, fid in enumerate(data['broadcast_file_ids'])]
+        await bot.send_media_group(ADMIN_CHAT_ID, media)
+    else:
+        await bot.send_message(ADMIN_CHAT_ID, data['broadcast_text'] or '(без текста)')
+    await bot.send_photo(ADMIN_CHAT_ID, photo=photo_id, caption=caption, reply_markup=builder.as_markup())
+    await message.answer("Заказ на рассылку отправлен на модерацию.")
     await state.clear()
 
-# Admin callback handler
+@menu_router.message(Broadcast.waiting_check)
+async def broadcast_need_photo(message: Message):
+    await message.answer("Пришлите фотографию чека.")
+
+# Модификация admin callback для обработки рассылки
 @menu_router.callback_query(AdminCallback.filter())
 async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallback, state: FSMContext, bot: Bot):
     from datetime import datetime, timedelta
@@ -636,7 +669,29 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
 
     order_id = callback_data.order_id
     action = callback_data.action
-
+    if order_id in pending_orders and pending_orders[order_id].get('order_type') == 'broadcast' and action == 'confirm':
+        from app.database import requests as req
+        from datetime import datetime
+        data = pending_orders.pop(order_id)
+        free_chat = int(os.getenv('FREE_CHAT_ID', '0'))
+        await req.add_broadcast_post(
+            content_type=data['content_type'],
+            text=data['text'],
+            photo_file_ids=data['file_ids'],
+            media_group_id=data['media_group_id'],
+            next_run_time=data['start_time'],
+            end_time=data['broadcast_end'],
+            interval_minutes=data['interval_minutes'],
+            chat_id=free_chat,
+            mode=data.get('mode','full')
+        )
+        try:
+            await query.message.edit_caption(caption=(query.message.caption + "\n\nСтатус: Подтверждено"), reply_markup=None)
+        except Exception:
+            pass
+        await bot.send_message(data['user_id'], "Ваша рассылка подтверждена и запланирована.")
+        await query.answer()
+        return
     if action == 'reject':
         await state.update_data(order_id_to_reject=order_id)
         # Убираем инлайн-клавиатуру у сообщения с заказом
@@ -692,7 +747,7 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
     if order_id in pending_orders:
         order = pending_orders.pop(order_id)
         user_id = order['user_id']
-
+        status = "Обработано"
         if action == "confirm":
             # Сохраняем пост(ы) в БД как ScheduledPost по целевым чатам
             tz = pytz.timezone("Europe/Moscow")
@@ -809,3 +864,52 @@ async def invalid_check(message: Message):
 async def invalid_post(message: Message):
     kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
     await message.answer("Пожалуйста, отправьте текст или фото.", reply_markup=kb.as_markup())
+
+@menu_router.message(Broadcast.waiting_start_time)
+async def broadcast_waiting_start_time(message: Message, state: FSMContext):
+    from datetime import datetime, timedelta
+    try:
+        txt = message.text.strip()
+        if txt.lower() == '/now':
+            start = datetime.now() + timedelta(minutes=1)
+        else:
+            start = datetime.strptime(txt, "%H:%M %d-%m-%Y")
+            if start < datetime.now():
+                await message.reply("Время в прошлом. Укажите корректное.")
+                return
+        data = await state.get_data()
+        duration_minutes = data['broadcast_duration']
+        end_time = start + timedelta(minutes=duration_minutes)
+        await state.update_data(broadcast_start=start, broadcast_end=end_time)
+        await state.set_state(Broadcast.waiting_post)
+        await message.answer("Теперь отправьте контент поста (текст или фото). Он будет публиковаться по расписанию.")
+    except Exception:
+        await message.reply("Неверный формат. Используйте HH:MM DD-MM-YYYY или /now")
+
+@menu_router.message(Broadcast.waiting_post)
+async def broadcast_waiting_post(message: Message, state: FSMContext, album: List[Message] | None = None):
+    if album:
+        content_type = 'photo'
+        file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
+        text = next((msg.caption for msg in album if msg.caption), '')
+        media_group_id = 0
+    else:
+        media_group_id = message.media_group_id or 0
+        if message.text:
+            content_type = 'text'
+            text = message.text
+            file_ids = []
+        elif message.photo:
+            content_type = 'photo'
+            text = message.caption or ''
+            file_ids = [message.photo[-1].file_id]
+        else:
+            await message.answer("Пожалуйста, отправьте текст или фото.")
+            return
+    max_len = 1024 if file_ids else 4096
+    if len(text or '') > max_len:
+        await message.reply(f"Слишком длинный текст. Лимит: {max_len} символов. Сейчас: {len(text or '')}.")
+        return
+    await state.update_data(broadcast_content_type=content_type, broadcast_text=text, broadcast_file_ids=file_ids, broadcast_media_group_id=media_group_id)
+    await state.set_state(Broadcast.waiting_check)
+    await message.answer("Отправьте фотографию чека оплаты рассылки.")

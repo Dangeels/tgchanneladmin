@@ -3,18 +3,16 @@ import asyncio
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-import app.handlers as handlers
 from app.handlers.menu import menu_router
 from app.handlers.admin_handlers import router1
 from app.handlers.handlers import router, pin_post, delete_scheduled_post
 from app.database.models import async_main
 from dotenv import load_dotenv
 from app.middlewares.album import AlbumMiddleware
-from app.utils.scheduler import scheduler_task, pending_task, handle_missed_tasks
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from app.utils.scheduler import scheduler_task, pending_task, handle_missed_tasks, broadcast_task
 
 load_dotenv()
 
@@ -47,6 +45,8 @@ async def on_startup(dispatcher):
                       id='scheduler_task', replace_existing=True)
     scheduler.add_job(pending_task, "interval", minutes=1, args=[bot, os.getenv('MAIN_CHAT_ID')],
                       id='pending_task', replace_existing=True)
+    scheduler.add_job(broadcast_task, "interval", minutes=1, args=[bot, scheduler],
+                      id='broadcast_task', replace_existing=True)
     scheduler.start()
     print("Планировщик запущен")
 
