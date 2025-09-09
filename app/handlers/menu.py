@@ -392,7 +392,7 @@ async def command_menu(message: Message, state: FSMContext):
     )
     builder = InlineKeyboardBuilder()
     builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
-    builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+    # Кнопка "Рассылка" временно отключена
     builder.adjust(1)
     builder = add_contact_button(builder)
     await message.answer(intro, reply_markup=builder.as_markup())
@@ -409,6 +409,18 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
     action = callback_data.action
 
     await query.answer()  # Acknowledge the callback
+
+    # Раздел "Рассылка" временно недоступен
+    if level.startswith("broadcast"):
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        try:
+            await query.message.edit_text("Раздел «Рассылка» временно недоступен.", reply_markup=builder.as_markup())
+        except Exception:
+            await bot.send_message(query.from_user.id, "Раздел «Рассылка» временно недоступен.", reply_markup=builder.as_markup())
+        return
 
     if level == "sub":
         await state.clear()
@@ -498,7 +510,7 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         await state.clear()
         builder = InlineKeyboardBuilder()
         builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
-        builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+        # Кнопка "Рассылка" временно отключена
         builder.adjust(1)
         builder = add_contact_button(builder)
         await query.message.edit_text("Главное меню. Выберите действие:", reply_markup=builder.as_markup())
@@ -523,96 +535,96 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         except Exception:
             await bot.send_message(query.from_user.id, "Выберите категорию:", reply_markup=builder.as_markup())
         return
-    elif level == "broadcast":
-        # Корневое меню рассылки: режим, интервал, длительность, продолжить
-        data = await state.get_data()
-        sel_mode = data.get('broadcast_mode')
-        sel_interval = data.get('broadcast_interval_code')
-        sel_duration = data.get('broadcast_duration_code')
-        txt = [
-            'Настройка рассылки в бесплатный чат:',
-            f"Режим: {('не выбран' if not sel_mode else ('Полная 24/7' if sel_mode=='full' else 'Ограниченная (дневное окно)'))}",
-            f"Интервал: {sel_interval or 'не выбран'}",
-            f"Длительность: {sel_duration or 'не выбрана'}",
-            '',
-            'Шаги: выберите режим, интервал, длительность, затем нажмите Продолжить.'
-        ]
-        builder = InlineKeyboardBuilder()
-        builder.button(text=f"Режим", callback_data=MenuCallback(level="broadcast_mode_menu").pack())
-        builder.button(text=f"Интервал", callback_data=MenuCallback(level="broadcast_interval_menu").pack())
-        builder.button(text=f"Длительность", callback_data=MenuCallback(level="broadcast_duration_menu").pack())
-        if sel_mode and sel_interval and sel_duration:
-            builder.button(text="Продолжить", callback_data=MenuCallback(level="broadcast_start").pack())
-        builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
-        builder.adjust(2,1,1)
-        builder = add_contact_button(builder)
-        try:
-            await query.message.edit_text('\n'.join(txt), reply_markup=builder.as_markup())
-        except Exception:
-            await bot.send_message(query.from_user.id, '\n'.join(txt), reply_markup=builder.as_markup())
-        return
-    elif level == "broadcast_mode_menu":
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Полная 24/7", callback_data=MenuCallback(level="broadcast_mode", option="full").pack())
-        builder.button(text="Ограниченная", callback_data=MenuCallback(level="broadcast_mode", option="limited").pack())
-        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-        builder.adjust(1)
-        builder = add_contact_button(builder)
-        await query.message.edit_text("Выберите режим рассылки:", reply_markup=builder.as_markup())
-        return
-    elif level == "broadcast_mode":
-        mode = callback_data.option
-        if mode not in ("full","limited"):
-            await query.answer("Неверный режим", show_alert=True); return
-        await state.update_data(broadcast_mode=mode)
-        await query.answer("Режим выбран")
-        # Возврат к корню рассылки
-        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-        return
-    elif level == "broadcast_interval_menu":
-        builder = InlineKeyboardBuilder()
-        for code, mins in BROADCAST_INTERVALS.items():
-            builder.button(text=code, callback_data=MenuCallback(level="broadcast_interval", option=code).pack())
-        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-        builder.adjust(3)
-        builder = add_contact_button(builder)
-        await query.message.edit_text("Выберите интервал:", reply_markup=builder.as_markup())
-        return
-    elif level == "broadcast_interval":
-        interval_code = callback_data.option
-        if interval_code not in BROADCAST_INTERVALS:
-            await query.answer("Неверный интервал", show_alert=True)
-            return
-        await state.update_data(broadcast_interval_code=interval_code, broadcast_interval=BROADCAST_INTERVALS[interval_code])
-        await query.answer("Интервал выбран")
-        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-        return
-    elif level == "broadcast_duration_menu":
-        builder = InlineKeyboardBuilder()
-        for code, minutes in BROADCAST_DURATIONS.items():
-            builder.button(text=code, callback_data=MenuCallback(level="broadcast_duration", option=code).pack())
-        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-        builder.adjust(3)
-        builder = add_contact_button(builder)
-        await query.message.edit_text("Выберите длительность:", reply_markup=builder.as_markup())
-        return
-    elif level == "broadcast_duration":
-        dur_code = callback_data.option
-        if dur_code not in BROADCAST_DURATIONS:
-            await query.answer("Неверная длительность", show_alert=True)
-            return
-        await state.update_data(broadcast_duration_code=dur_code, broadcast_duration=BROADCAST_DURATIONS[dur_code])
-        await query.answer("Длительность выбрана")
-        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-        return
-    elif level == "broadcast_start":
-        data = await state.get_data()
-        if not (data.get('broadcast_mode') and data.get('broadcast_interval') and data.get('broadcast_duration')):
-            await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
-            return
-        await state.set_state(Broadcast.waiting_start_time)
-        await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
-        return
+    # elif level == "broadcast":
+    #     # Корневое меню рассылки: режим, интервал, длительность, продолжить
+    #     data = await state.get_data()
+    #     sel_mode = data.get('broadcast_mode')
+    #     sel_interval = data.get('broadcast_interval_code')
+    #     sel_duration = data.get('broadcast_duration_code')
+    #     txt = [
+    #         'Настройка рассылки в бесплатный чат:',
+    #         f"Режим: {('не выбран' if not sel_mode else ('Полная 24/7' if sel_mode=='full' else 'Ограниченная (дневное окно)'))}",
+    #         f"Интервал: {sel_interval or 'не выбран'}",
+    #         f"Длительность: {sel_duration or 'не выбрана'}",
+    #         '',
+    #         'Шаги: выберите режим, интервал, длительность, затем нажмите Продолжить.'
+    #     ]
+    #     builder = InlineKeyboardBuilder()
+    #     builder.button(text=f"Режим", callback_data=MenuCallback(level="broadcast_mode_menu").pack())
+    #     builder.button(text=f"Интервал", callback_data=MenuCallback(level="broadcast_interval_menu").pack())
+    #     builder.button(text=f"Длительность", callback_data=MenuCallback(level="broadcast_duration_menu").pack())
+    #     if sel_mode and sel_interval and sel_duration:
+    #         builder.button(text="Продолжить", callback_data=MenuCallback(level="broadcast_start").pack())
+    #     builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
+    #     builder.adjust(2,1,1)
+    #     builder = add_contact_button(builder)
+    #     try:
+    #         await query.message.edit_text('\n'.join(txt), reply_markup=builder.as_markup())
+    #     except Exception:
+    #         await bot.send_message(query.from_user.id, '\n'.join(txt), reply_markup=builder.as_markup())
+    #     return
+    # elif level == "broadcast_mode_menu":
+    #     builder = InlineKeyboardBuilder()
+    #     builder.button(text="Полная 24/7", callback_data=MenuCallback(level="broadcast_mode", option="full").pack())
+    #     builder.button(text="Ограниченная", callback_data=MenuCallback(level="broadcast_mode", option="limited").pack())
+    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+    #     builder.adjust(1)
+    #     builder = add_contact_button(builder)
+    #     await query.message.edit_text("Выберите режим рассылки:", reply_markup=builder.as_markup())
+    #     return
+    # elif level == "broadcast_mode":
+    #     mode = callback_data.option
+    #     if mode not in ("full","limited"):
+    #         await query.answer("Неверный режим", show_alert=True); return
+    #     await state.update_data(broadcast_mode=mode)
+    #     await query.answer("Режим выбран")
+    #     # Возврат к корню рассылки
+    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+    #     return
+    # elif level == "broadcast_interval_menu":
+    #     builder = InlineKeyboardBuilder()
+    #     for code, mins in BROADCAST_INTERVALS.items():
+    #         builder.button(text=code, callback_data=MenuCallback(level="broadcast_interval", option=code).pack())
+    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+    #     builder.adjust(3)
+    #     builder = add_contact_button(builder)
+    #     await query.message.edit_text("Выберите интервал:", reply_markup=builder.as_markup())
+    #     return
+    # elif level == "broadcast_interval":
+    #     interval_code = callback_data.option
+    #     if interval_code not in BROADCAST_INTERVALS:
+    #         await query.answer("Неверный интервал", show_alert=True)
+    #         return
+    #     await state.update_data(broadcast_interval_code=interval_code, broadcast_interval=BROADCAST_INTERVALS[interval_code])
+    #     await query.answer("Интервал выбран")
+    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+    #     return
+    # elif level == "broadcast_duration_menu":
+    #     builder = InlineKeyboardBuilder()
+    #     for code, minutes in BROADCAST_DURATIONS.items():
+    #         builder.button(text=code, callback_data=MenuCallback(level="broadcast_duration", option=code).pack())
+    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+    #     builder.adjust(3)
+    #     builder = add_contact_button(builder)
+    #     await query.message.edit_text("Выберите длительность:", reply_markup=builder.as_markup())
+    #     return
+    # elif level == "broadcast_duration":
+    #     dur_code = callback_data.option
+    #     if dur_code not in BROADCAST_DURATIONS:
+    #         await query.answer("Неверная длительность", show_alert=True)
+    #         return
+    #     await state.update_data(broadcast_duration_code=dur_code, broadcast_duration=BROADCAST_DURATIONS[dur_code])
+    #     await query.answer("Длительность выбрана")
+    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+    #     return
+    # elif level == "broadcast_start":
+    #     data = await state.get_data()
+    #     if not (data.get('broadcast_mode') and data.get('broadcast_interval') and data.get('broadcast_duration')):
+    #         await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
+    #         return
+    #     await state.set_state(Broadcast.waiting_start_time)
+    #     await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
+    #     return
 @menu_router.message(Broadcast.waiting_check, F.photo)
 async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
