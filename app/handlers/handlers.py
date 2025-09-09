@@ -20,8 +20,11 @@ async def help_command(message: Message):
         return
     help_text = (
 """
-Помощь (админ)
+Помощь для администрации
 Основные пользовательские функции теперь доступны через /menu (там же пункт Рассылка).
+
+<информация> - в таких скобках обязательна к заполнению.
+[информация] - в таких скобках опциональна к заполнению.
 
 Команды управления постами:
 /pending – добавить пост в очередь.
@@ -30,35 +33,35 @@ async def help_command(message: Message):
 /all_scheduled_posts – показать запланированные.
 /delete_pending_post <id> – удалить из очереди.
 /delete_scheduled_post <id> – удалить запланированный (и из чата, если уже опубликован).
-/pin_post <id> [HH:MM DD-MM-YYYY] – (пере)закрепить; если время не указано – навсегда (до 31-12-2200).
+/pin_post <id> [HH:MM DD-MM-YYYY] – (пере)закрепить; если время не указано – закрепить навсегда.
 /chats – показать текущие chat_id из .env.
-
-Администраторы:
-/all_admins – список админов.
-/set_admin @username – добавить админа.
-/delete_admin @username – удалить админа (при достаточных правах).
 
 Рассылки (broadcast) – повторная публикация поста по интервалу в бесплатный чат:
 /broadcast_list – список рассылок (ID, статус, режим, окно, next, end).
 /broadcast_stop <id> – остановить кампанию.
 /broadcast_mode <id> <full|limited> – сменить режим.
-/broadcast_window <id> HH:MM-HH:MM – локальное дневное окно кампании (автоматически ставит limited).
-/broadcast_global_window HH:MM-HH:MM – включить/обновить глобальное окно для всех limited без локального.
-/broadcast_global_off – отключить глобальное окно (limited без локального работает как full).
-/broadcast_manual <interval_minutes> <start HH:MM_DD-MM-YYYY|now> <end HH:MM_DD-MM-YYYY> <full|limited> [HH:MM-HH:MM]
+/broadcast_window <id> <HH:MM-HH:MM> – установить локальное дневное окно рассылки для определённого поста (автоматически ставит limited).
+/broadcast_global_window <HH:MM-HH:MM> – включить/обновить глобальное окно для всех постов-рассылок без установленного локального окна.
+/broadcast_global_off – отключить глобальное окно (все посты без установленного локального окна будут публиковаться 24/7).
+/broadcast_manual <interval_minutes> <HH:MM_DD-MM-YYYY или now> <HH:MM_DD-MM-YYYY> <full|limited> [HH:MM-HH:MM]
   Пример: /broadcast_manual 120 now 23:00_10-09-2025 limited 09:00-23:00
 
 Режимы:
  full – публикация 24/7.
- limited – только внутри окна (локального или глобального). Если оба отключены – работает как full.
+ limited – только внутри установленного временного окна.
 
 Окна (ночной режим):
-- Локальное (per campaign) через /broadcast_window.
+- Локальное через /broadcast_window.
 - Глобальное через /broadcast_global_window.
-- Если limited и нет активного окна – будет выбран full.
 
 
-Эта справка предназначена только для админов. Для обычных пользователей /menu.
+Администраторы:
+Эти команды доступны только старшим администраторам
+/all_admins – список всех администраторов.
+/set_admin @username – добавить нового администратора.
+/delete_admin @username – удалить администратора.
+
+Эта справка предназначена и доступна только для администраторов. Для обычных пользователей /menu.
 """
     )
     await message.answer(help_text)

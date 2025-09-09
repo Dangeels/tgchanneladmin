@@ -192,6 +192,13 @@ async def add_broadcast_post(
         photo_file_ids = []
     if mode not in ('full', 'limited'):
         mode = 'full'
+
+    # Ограничение длины текста как у обычной публикации
+    if text:
+        max_len = 1024 if photo_file_ids else 4096
+        if len(text) > max_len:
+            text = text[:max_len]
+
     # Если окно не передано — пробуем взять глобальное
     if mode == 'limited':
         if active_start_min is None or active_end_min is None:
@@ -202,6 +209,7 @@ async def add_broadcast_post(
             else:
                 # если глобальная конфигурация выключена — fallback в full
                 mode = 'full'
+
     post = BroadcastPost(
         content_type=content_type,
         text=text,
