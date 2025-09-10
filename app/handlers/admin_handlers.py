@@ -13,6 +13,11 @@ router1 = Router()
 
 
 class AdminBroadcast(StatesGroup):
+    waiting_interval = State()
+    waiting_start = State()
+    waiting_end = State()
+    waiting_mode = State()
+    waiting_window = State()
     waiting_content = State()
 
 
@@ -74,9 +79,9 @@ async def broadcast_list(message: Message):
     ad = await is_admin(message.from_user.username)
     if not ad[0]:
         return
-    posts = await breq.list_broadcasts()
+    posts = await breq.list_broadcasts(active_only=True)
     if not posts:
-        await message.answer('Активных или сохранённых рассылок нет')
+        await message.answer('Активных рассылок нет')
         return
     lines = []
     for p in posts[:60]:
@@ -265,73 +270,115 @@ async def broadcast_global_off(message: Message):
     await message.answer('Глобальное окно отключено (кампании limited будут работать как full если локальное окно не задано).')
 
 
-# /broadcast_manual <interval_minutes> <start:HH:MM_DD-MM-YYYY|now> <end:HH:MM_DD-MM-YYYY> <full|limited> [HH:MM-HH:MM]
-@router1.message(Command('broadcast_manual'))
-async def broadcast_manual(message: Message, state: FSMContext):
+# Новый пошаговый мастер для /broadcast
+@router1.message(Command('broadcast'))
+async def broadcast_start(message: Message, state: FSMContext):
     if message.chat.type != 'private':
         return
     ad = await is_admin(message.from_user.username)
     if not ad[0]:
         return
+    await state.clear()
+    await state.set_state(AdminBroadcast.waiting_interval)
+    await message.answer('Интервал в минутах (>0 и <=1440). Пример: 120')
+
+
+@router1.message(AdminBroadcast.waiting_interval)
+async def broadcast_get_interval(message: Message, state: FSMContext):
     try:
-        parts = message.text.split()
-        if len(parts) < 5:
-            raise ValueError
-        _, interval_s, start_s, end_s, mode, *rest = parts
-        interval = int(interval_s)
-        if interval <= 0 or interval > 60*24:
-            await message.answer('Интервал минут должен быть >0 и <=1440')
+        interval = int(message.text.strip())
+        if interval <= 0 or interval > 1440:
+            await message.answer('Интервал минут должен быть >0 и <=1440. Введите снова.')
             return
-        tz = pytz.timezone('Europe/Moscow')
-        now = datetime.now(tz)
-        if start_s.lower() == 'now':
-            start_dt = now + timedelta(minutes=1)
+        await state.update_data(bc_interval=interval)
+        await state.set_state(AdminBroadcast.waiting_start)
+        await message.answer('Время старта: HH:MM_DD-MM-YYYY или now')
+    except Exception:
+        await message.answer('Введите число минут. Пример: 180')
+
+
+@router1.message(AdminBroadcast.waiting_start)
+async def broadcast_get_start(message: Message, state: FSMContext):
+    tz = pytz.timezone('Europe/Moscow')
+    txt = (message.text or '').strip()
+    try:
+        if txt.lower() in ('now', '/now'):
+            start_dt = datetime.now(tz) + timedelta(minutes=1)
         else:
-            start_dt = datetime.strptime(start_s, '%H:%M_%d-%m-%Y')
+            start_dt = datetime.strptime(txt, '%H:%M_%d-%m-%Y')
             if start_dt.tzinfo is None:
                 start_dt = tz.localize(start_dt)
-        end_dt = datetime.strptime(end_s, '%H:%M_%d-%m-%Y')
+        await state.update_data(bc_start=start_dt)
+        await state.set_state(AdminBroadcast.waiting_end)
+        await message.answer('Время окончания: HH:MM_DD-MM-YYYY')
+    except Exception:
+        await message.answer('Формат времени: HH:MM_DD-MM-YYYY или now')
+
+
+@router1.message(AdminBroadcast.waiting_end)
+async def broadcast_get_end(message: Message, state: FSMContext):
+    tz = pytz.timezone('Europe/Moscow')
+    try:
+        end_dt = datetime.strptime(message.text.strip(), '%H:%M_%d-%m-%Y')
         if end_dt.tzinfo is None:
             end_dt = tz.localize(end_dt)
-        if end_dt <= start_dt:
-            await message.answer('end <= start')
+        data = await state.get_data()
+        start_dt = data.get('bc_start')
+        if not start_dt or end_dt <= start_dt:
+            await message.answer('end <= start. Укажите корректное время окончания.')
             return
-        if mode not in ('full','limited'):
-            await message.answer('mode должен быть full или limited')
-            return
-        win_start = win_end = None
-        if rest:
-            try:
-                t1,t2 = rest[0].split('-')
-                h1,m1 = map(int,t1.split(':'))
-                h2,m2 = map(int,t2.split(':'))
-                win_start = h1*60+m1
-                win_end = h2*60+m2
-            except Exception:
-                await message.answer('Окно формата HH:MM-HH:MM')
-                return
-        await state.update_data(
-            manual_interval=interval,
-            manual_start=start_dt,
-            manual_end=end_dt,
-            manual_mode=mode,
-            manual_win_start=win_start,
-            manual_win_end=win_end
-        )
-        await state.set_state(AdminBroadcast.waiting_content)
-        await message.answer('Отправьте контент (текст или фото) для ручной рассылки.')
+        await state.update_data(bc_end=end_dt)
+        await state.set_state(AdminBroadcast.waiting_mode)
+        await message.answer('Режим: full (24/7) или limited (окно). Введите full или limited')
     except Exception:
-        await message.answer('Формат: /broadcast_manual <interval_minutes> <start HH:MM_DD-MM-YYYY|now> <end HH:MM_DD-MM-YYYY> <full|limited> [HH:MM-HH:MM]')
+        await message.answer('Формат времени: HH:MM_DD-MM-YYYY')
+
+
+@router1.message(AdminBroadcast.waiting_mode)
+async def broadcast_get_mode(message: Message, state: FSMContext):
+    mode = (message.text or '').strip().lower()
+    if mode not in ('full', 'limited'):
+        await message.answer('Введите full или limited')
+        return
+    await state.update_data(bc_mode=mode)
+    if mode == 'limited':
+        await state.set_state(AdminBroadcast.waiting_window)
+        await message.answer('Окно активности HH:MM-HH:MM или /skip для стандартного 09:00-23:00')
+    else:
+        await state.set_state(AdminBroadcast.waiting_content)
+        await message.answer('Отправьте контент (текст или фото) для рассылки')
+
+
+@router1.message(AdminBroadcast.waiting_window)
+async def broadcast_get_window(message: Message, state: FSMContext):
+    txt = (message.text or '').strip().lower()
+    if txt in ('/skip', 'skip'):
+        ws, we = 9*60, 23*60
+    else:
+        try:
+            t1, t2 = txt.split('-')
+            h1, m1 = map(int, t1.split(':'))
+            h2, m2 = map(int, t2.split(':'))
+            ws, we = h1*60+m1, h2*60+m2
+            if not (0 <= ws < 1440 and 0 <= we < 1440):
+                raise ValueError
+        except Exception:
+            await message.answer('Формат окна: HH:MM-HH:MM или /skip')
+            return
+    await state.update_data(bc_win_start=ws, bc_win_end=we)
+    await state.set_state(AdminBroadcast.waiting_content)
+    await message.answer('Отправьте контент (текст или фото) для рассылки')
 
 
 @router1.message(AdminBroadcast.waiting_content)
-async def broadcast_manual_content(message: Message, state: FSMContext):
+async def broadcast_flow_content(message: Message, state: FSMContext):
     if message.chat.type != 'private':
         return
     ad = await is_admin(message.from_user.username)
     if not ad[0]:
         return
     data = await state.get_data()
+    # Контент
     content_type = None
     text = ''
     file_ids = []
@@ -346,20 +393,19 @@ async def broadcast_manual_content(message: Message, state: FSMContext):
     else:
         await message.answer('Нужен текст или фото')
         return
-    # NEW: валидация длины аналогично обычной публикации
+    # Валидация длины как в обычной публикации
     max_len = 1024 if file_ids else 4096
     if len(text or '') > max_len:
         await message.answer(f'Слишком длинный текст. Лимит: {max_len} символов. Сейчас: {len(text)}. Отправьте заново.')
         return
     try:
         free_chat = int(os.getenv('FREE_CHAT_ID','0'))
-        start_dt = data['manual_start']
-        end_dt = data['manual_end']
-        interval = data['manual_interval']
-        mode = data['manual_mode']
-        ws = data.get('manual_win_start')
-        we = data.get('manual_win_end')
-        # сохраняем без tz
+        start_dt = data['bc_start']
+        end_dt = data['bc_end']
+        interval = data['bc_interval']
+        mode = data['bc_mode']
+        ws = data.get('bc_win_start') if mode == 'limited' else None
+        we = data.get('bc_win_end') if mode == 'limited' else None
         await breq.add_broadcast_post(
             content_type=content_type,
             text=text,
@@ -373,7 +419,18 @@ async def broadcast_manual_content(message: Message, state: FSMContext):
             active_start_min=ws,
             active_end_min=we
         )
-        await message.answer('Ручная рассылка создана')
+        await message.answer('Рассылка создана')
     except Exception as e:
         await message.answer(f'Ошибка создания: {e}')
     await state.clear()
+
+
+# Алиас: старая команда уведомляет об изменении
+@router1.message(Command('broadcast_manual'))
+async def broadcast_manual_deprecated(message: Message):
+    if message.chat.type != 'private':
+        return
+    ad = await is_admin(message.from_user.username)
+    if not ad[0]:
+        return
+    await message.answer('Команда устарела. Используйте /broadcast для пошагового создания рассылки.')
