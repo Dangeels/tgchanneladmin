@@ -471,7 +471,7 @@ async def command_menu(message: Message, state: FSMContext):
     )
     builder = InlineKeyboardBuilder()
     builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
-    builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+    # Кнопка "Рассылка" временно отключена
     builder.adjust(1)
     builder = add_contact_button(builder)
     await message.answer(intro, reply_markup=builder.as_markup())
@@ -488,6 +488,18 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
     action = callback_data.action
 
     await query.answer()  # Acknowledge the callback
+
+    # Раздел "Рассылка" временно недоступен
+    if level.startswith("broadcast"):
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        try:
+            await query.message.edit_text("Раздел «Рассылка» временно недоступен.", reply_markup=builder.as_markup())
+        except Exception:
+            await bot.send_message(query.from_user.id, "Раздел «Рассылка» временно недоступен.", reply_markup=builder.as_markup())
+        return
 
     if level == "sub":
         await state.clear()
@@ -577,7 +589,7 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         await state.clear()
         builder = InlineKeyboardBuilder()
         builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
-        builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+        # Кнопка "Рассылка" временно отключена
         builder.adjust(1)
         builder = add_contact_button(builder)
         intro = (
@@ -610,6 +622,7 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         except Exception:
             await bot.send_message(query.from_user.id, "Выберите категорию:", reply_markup=builder.as_markup())
         return
+
     elif level == "broadcast":
         # Корневое меню рассылки: режим, интервал, длительность, продолжить
         data = await state.get_data()
@@ -735,6 +748,7 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         # Пустышка — ничего не делаем
         await query.answer()
         return
+
 @menu_router.message(Broadcast.waiting_check, F.photo)
 async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
