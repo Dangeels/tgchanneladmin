@@ -596,6 +596,21 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         if waiting_msg_id:
             await bot.edit_message_text(chat_id=query.from_user.id, message_id=waiting_msg_id, text="Покупка отменена.", reply_markup=None)
         await state.clear()
+        # Возврат в начальное меню
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Обычная публикация", callback_data=MenuCallback(level="root_pub").pack())
+        builder.button(text="Рассылка", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        intro = (
+            "Добро пожаловать! Ниже — быстрые ссылки на наши площадки:\n"
+            f"• Основной чат: {LINKS['main']}\n"
+            f"• Премиум-канал: {LINKS['premium']}\n"
+            f"• Бесплатный чат: {LINKS['free']}\n"
+            f"• Чат с отзывами: {LINKS['reviews']}\n\n"
+            "Выберите тип услуги."
+        )
+        await bot.send_message(query.from_user.id, text=intro, reply_markup=builder.as_markup())
 
     elif level == "root_pub":
         await state.clear()
@@ -790,7 +805,10 @@ async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
 
 @menu_router.message(Broadcast.waiting_check)
 async def broadcast_need_photo(message: Message):
-    await message.answer("Пришлите фотографию чека.")
+    # Добавляем кнопку отмены и без контакта, как и в обычной публикации
+    cancel_builder = InlineKeyboardBuilder()
+    cancel_builder.button(text="Отмена", callback_data=MenuCallback(level="cancel").pack())
+    await message.answer("Пришлите фотографию чека.", reply_markup=cancel_builder.as_markup())
 
 # Модификация admin callback для обработки рассылки
 @menu_router.callback_query(AdminCallback.filter())
@@ -1062,13 +1080,17 @@ async def broadcast_waiting_post(message: Message, state: FSMContext, album: Lis
         data.get('broadcast_duration_code'),
         data.get('broadcast_mode')
     )
+    # Добавляем кнопку Отмена и сохраняем id сообщения для последующего редактирования
+    cancel_builder = InlineKeyboardBuilder()
+    cancel_builder.button(text="Отмена", callback_data=MenuCallback(level="cancel").pack())
     if price is not None:
-        await message.answer(f"Отправьте фотографию чека оплаты на сумму {price}₽.\n\n"
+        sent = await message.answer(f"Отправьте фотографию чека оплаты на сумму {price}₽.\n\n"
                             f"Реквизиты для оплаты:\n"
                             f"Сбербанк:\n"
                             f"Даниил Дмитриевич М.\n"
                             f"2202206250331753\n"
                             f"Можно по номеру:\n"
-                            f"89164253032")
+                            f"89164253032", reply_markup=cancel_builder.as_markup())
     else:
-        await message.answer("Отправьте фотографию чека оплаты рассылки.")
+        sent = await message.answer("Отправьте фотографию чека оплаты рассылки.", reply_markup=cancel_builder.as_markup())
+    await state.update_data(waiting_msg_id=sent.message_id)
