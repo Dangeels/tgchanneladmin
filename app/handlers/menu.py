@@ -58,13 +58,92 @@ BROADCAST_INTERVALS = {
     '3h': 180
 }
 
+# Добавили 3 недели
 BROADCAST_DURATIONS = {
     '1w': 7*24*60,
     '2w': 14*24*60,
+    '3w': 21*24*60,
     '1m': 30*24*60,
     '2m': 60*24*60,
     '3m': 90*24*60
 }
+
+# Русские подписи
+INTERVAL_LABELS = {
+    '15m': 'Раз в 15 минут',
+    '30m': 'Раз в 30 минут',
+    '1h': 'Раз в 1 час',
+    '2h': 'Раз в 2 часа',
+    '3h': 'Раз в 3 часа',
+}
+
+DURATION_LABELS = {
+    '1w': '1 неделя (7 дней)',
+    '2w': '2 недели (14 дней)',
+    '3w': '3 недели (21 день)',
+    '1m': '1 месяц (30 дней)',
+    '2m': '2 месяца (60 дней)',
+    '3m': '3 месяца (90 дней)',
+}
+
+# Прайс-лист: базовые цены для дневного режима (09:00–23:00)
+BROADCAST_PRICE_MAP: Dict[str, Dict[str, int]] = {
+    '15m': {
+        '1w': 1250, '2w': 1950, '3w': 2650, '1m': 3200, '2m': 4100, '3m': 5000
+    },
+    '30m': {
+        '1w': 750, '2w': 1250, '3w': 1800, '1m': 2200, '2m': 3100, '3m': 4000
+    },
+    '1h': {
+        '1w': 500, '2w': 900, '3w': 1250, '1m': 1600, '2m': 2800, '3m': 3500
+    },
+    '2h': {
+        '1w': 450, '2w': 750, '3w': 900, '1m': 1200, '2m': 1950, '3m': 2850
+    },
+    '3h': {
+        '1w': 350, '2w': 600, '3w': 750, '1m': 1000, '2m': 1750, '3m': 2500
+    }
+}
+
+# Хелперы для цены и количества сообщений
+WINDOW_START_MIN = 9*60   # 09:00
+WINDOW_END_MIN = 23*60    # 23:00
+
+def get_broadcast_price(interval_code: str | None, duration_code: str | None, mode: str | None) -> int | None:
+    if not interval_code or not duration_code or not mode:
+        return None
+    base = BROADCAST_PRICE_MAP.get(interval_code, {}).get(duration_code)
+    if base is None:
+        return None
+    if mode == 'full':
+        return int(base * 1.5)
+    return base
+
+def get_duration_days(duration_code: str) -> int:
+    return {
+        '1w': 7, '2w': 14, '3w': 21, '1m': 30, '2m': 60, '3m': 90
+    }.get(duration_code, 0)
+
+def count_per_day(interval_minutes: int, mode: str | None) -> int:
+    if mode == 'limited':
+        window = WINDOW_END_MIN - WINDOW_START_MIN
+        # Количество слотов в [09:00,23:00) с шагом interval: 9:00, 9:00+M, ... < 23:00
+        return ((window - 1) // interval_minutes) + 1
+    if mode == 'full':
+        # Полный режим 24/7
+        return ((24*60 - 1) // interval_minutes) + 1
+    return 0
+
+def total_messages(interval_code: str | None, duration_code: str | None, mode: str | None) -> int | None:
+    if not interval_code or not duration_code or not mode:
+        return None
+    interval = BROADCAST_INTERVALS.get(interval_code)
+    if not interval:
+        return None
+    days = get_duration_days(duration_code)
+    if not days:
+        return None
+    return count_per_day(interval, mode) * days
 
 # Define CallbackData factory for menu navigation
 class MenuCallback(CallbackData, prefix="menu"):
@@ -513,7 +592,15 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         # Кнопка "Рассылка" временно отключена
         builder.adjust(1)
         builder = add_contact_button(builder)
-        await query.message.edit_text("Главное меню. Выберите действие:", reply_markup=builder.as_markup())
+        intro = (
+            "Добро пожаловать! Ниже — быстрые ссылки на наши площадки:\n"
+            f"• Основной чат: {LINKS['main']}\n"
+            f"• Премиум-канал: {LINKS['premium']}\n"
+            f"• Бесплатный чат: {LINKS['free']}\n"
+            f"• Чат с отзывами: {LINKS['reviews']}\n\n"
+            "Выберите тип услуги."
+        )
+        await query.message.edit_text(text=intro, reply_markup=builder.as_markup())
 
     elif level == "cancel":
         data = await state.get_data()
@@ -535,106 +622,146 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         except Exception:
             await bot.send_message(query.from_user.id, "Выберите категорию:", reply_markup=builder.as_markup())
         return
-    # elif level == "broadcast":
-    #     # Корневое меню рассылки: режим, интервал, длительность, продолжить
-    #     data = await state.get_data()
-    #     sel_mode = data.get('broadcast_mode')
-    #     sel_interval = data.get('broadcast_interval_code')
-    #     sel_duration = data.get('broadcast_duration_code')
-    #     txt = [
-    #         'Настройка рассылки в бесплатный чат:',
-    #         f"Режим: {('не выбран' if not sel_mode else ('Полная 24/7' if sel_mode=='full' else 'Ограниченная (дневное окно)'))}",
-    #         f"Интервал: {sel_interval or 'не выбран'}",
-    #         f"Длительность: {sel_duration or 'не выбрана'}",
-    #         '',
-    #         'Шаги: выберите режим, интервал, длительность, затем нажмите Продолжить.'
-    #     ]
-    #     builder = InlineKeyboardBuilder()
-    #     builder.button(text=f"Режим", callback_data=MenuCallback(level="broadcast_mode_menu").pack())
-    #     builder.button(text=f"Интервал", callback_data=MenuCallback(level="broadcast_interval_menu").pack())
-    #     builder.button(text=f"Длительность", callback_data=MenuCallback(level="broadcast_duration_menu").pack())
-    #     if sel_mode and sel_interval and sel_duration:
-    #         builder.button(text="Продолжить", callback_data=MenuCallback(level="broadcast_start").pack())
-    #     builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
-    #     builder.adjust(2,1,1)
-    #     builder = add_contact_button(builder)
-    #     try:
-    #         await query.message.edit_text('\n'.join(txt), reply_markup=builder.as_markup())
-    #     except Exception:
-    #         await bot.send_message(query.from_user.id, '\n'.join(txt), reply_markup=builder.as_markup())
-    #     return
-    # elif level == "broadcast_mode_menu":
-    #     builder = InlineKeyboardBuilder()
-    #     builder.button(text="Полная 24/7", callback_data=MenuCallback(level="broadcast_mode", option="full").pack())
-    #     builder.button(text="Ограниченная", callback_data=MenuCallback(level="broadcast_mode", option="limited").pack())
-    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-    #     builder.adjust(1)
-    #     builder = add_contact_button(builder)
-    #     await query.message.edit_text("Выберите режим рассылки:", reply_markup=builder.as_markup())
-    #     return
-    # elif level == "broadcast_mode":
-    #     mode = callback_data.option
-    #     if mode not in ("full","limited"):
-    #         await query.answer("Неверный режим", show_alert=True); return
-    #     await state.update_data(broadcast_mode=mode)
-    #     await query.answer("Режим выбран")
-    #     # Возврат к корню рассылки
-    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-    #     return
-    # elif level == "broadcast_interval_menu":
-    #     builder = InlineKeyboardBuilder()
-    #     for code, mins in BROADCAST_INTERVALS.items():
-    #         builder.button(text=code, callback_data=MenuCallback(level="broadcast_interval", option=code).pack())
-    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-    #     builder.adjust(3)
-    #     builder = add_contact_button(builder)
-    #     await query.message.edit_text("Выберите интервал:", reply_markup=builder.as_markup())
-    #     return
-    # elif level == "broadcast_interval":
-    #     interval_code = callback_data.option
-    #     if interval_code not in BROADCAST_INTERVALS:
-    #         await query.answer("Неверный интервал", show_alert=True)
-    #         return
-    #     await state.update_data(broadcast_interval_code=interval_code, broadcast_interval=BROADCAST_INTERVALS[interval_code])
-    #     await query.answer("Интервал выбран")
-    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-    #     return
-    # elif level == "broadcast_duration_menu":
-    #     builder = InlineKeyboardBuilder()
-    #     for code, minutes in BROADCAST_DURATIONS.items():
-    #         builder.button(text=code, callback_data=MenuCallback(level="broadcast_duration", option=code).pack())
-    #     builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
-    #     builder.adjust(3)
-    #     builder = add_contact_button(builder)
-    #     await query.message.edit_text("Выберите длительность:", reply_markup=builder.as_markup())
-    #     return
-    # elif level == "broadcast_duration":
-    #     dur_code = callback_data.option
-    #     if dur_code not in BROADCAST_DURATIONS:
-    #         await query.answer("Неверная длительность", show_alert=True)
-    #         return
-    #     await state.update_data(broadcast_duration_code=dur_code, broadcast_duration=BROADCAST_DURATIONS[dur_code])
-    #     await query.answer("Длительность выбрана")
-    #     await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
-    #     return
-    # elif level == "broadcast_start":
-    #     data = await state.get_data()
-    #     if not (data.get('broadcast_mode') and data.get('broadcast_interval') and data.get('broadcast_duration')):
-    #         await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
-    #         return
-    #     await state.set_state(Broadcast.waiting_start_time)
-    #     await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
-    #     return
+
+    elif level == "broadcast":
+        # Корневое меню рассылки: режим, интервал, длительность, продолжить
+        data = await state.get_data()
+        sel_mode = data.get('broadcast_mode')  # БЕЗ значения по умолчанию — требуется явный выбор
+        sel_interval = data.get('broadcast_interval_code')
+        sel_duration = data.get('broadcast_duration_code')
+        # Русские подписи выбранных значений
+        sel_interval_text = INTERVAL_LABELS.get(sel_interval, 'не выбран') if sel_interval else 'не выбран'
+        sel_duration_text = DURATION_LABELS.get(sel_duration, 'не выбрана') if sel_duration else 'не выбрана'
+        # Динамика: цена и кол-во сообщений — считаем только при выбранном режиме
+        price = get_broadcast_price(sel_interval, sel_duration, sel_mode)
+        total_msgs = total_messages(sel_interval, sel_duration, sel_mode)
+        price_line = f"Цена: {price}₽" if price is not None else "Цена: —"
+        count_line = f"Всего сообщений: {total_msgs}" if total_msgs is not None else "Всего сообщений: —"
+        mode_line = (
+            "Дневной 09:00–23:00" if sel_mode == 'limited' else ("Круглосуточно 24/7 (+50% к цене)" if sel_mode == 'full' else "не выбран")
+        )
+        txt = [
+            'Настройка рассылки в бесплатный чат:',
+            f"Режим: {mode_line}",
+            f"Интервал: {sel_interval_text}",
+            f"Длительность: {sel_duration_text}",
+            price_line,
+            count_line,
+            '',
+            'Как это работает: пост публикуется по выбранному интервалу в бесплатный чат в течение указанного срока.',
+            'По умолчанию — дневной режим 09:00–23:00 (ночью публикации не идут). Можно включить 24/7 (+50% к цене).'
+        ]
+        builder = InlineKeyboardBuilder()
+        builder.button(text=f"Режим", callback_data=MenuCallback(level="broadcast_mode_menu").pack())
+        builder.button(text=f"Интервал", callback_data=MenuCallback(level="broadcast_interval_menu").pack())
+        builder.button(text=f"Длительность", callback_data=MenuCallback(level="broadcast_duration_menu").pack())
+        if sel_mode and sel_interval and sel_duration:
+            builder.button(text="Продолжить", callback_data=MenuCallback(level="broadcast_start").pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="main").pack())
+        builder.adjust(2,1,1)
+        # Удалены разделители-пустышки перед кнопкой контакта
+        builder = add_contact_button(builder)
+        try:
+            await query.message.edit_text('\n'.join(txt), reply_markup=builder.as_markup())
+        except Exception:
+            await bot.send_message(query.from_user.id, '\n'.join(txt), reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_mode_menu":
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Дневной режим 09:00–23:00", callback_data=MenuCallback(level="broadcast_mode", option="limited").pack())
+        builder.button(text="Круглосуточно 24/7 (+50% к цене)", callback_data=MenuCallback(level="broadcast_mode", option="full").pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите режим рассылки:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_mode":
+        mode = callback_data.option
+        if mode not in ("full","limited"):
+            await query.answer("Неверный режим", show_alert=True); return
+        await state.update_data(broadcast_mode=mode)
+        await query.answer("Режим выбран")
+        # Возврат к корню рассылки
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+        return
+    elif level == "broadcast_interval_menu":
+        data = await state.get_data()
+        sel_duration = data.get('broadcast_duration_code')
+        sel_mode = data.get('broadcast_mode')  # без дефолта, чтобы не подсвечивать цену до выбора режима
+        builder = InlineKeyboardBuilder()
+        for code, mins in BROADCAST_INTERVALS.items():
+            label = INTERVAL_LABELS.get(code, code)
+            if sel_duration and sel_mode:
+                p = get_broadcast_price(code, sel_duration, sel_mode)
+                if p is not None:
+                    label = f"{label} — {p}₽"
+            builder.button(text=label, callback_data=MenuCallback(level="broadcast_interval", option=code).pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите интервал:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_interval":
+        interval_code = callback_data.option
+        if interval_code not in BROADCAST_INTERVALS:
+            await query.answer("Неверный интервал", show_alert=True)
+            return
+        await state.update_data(broadcast_interval_code=interval_code, broadcast_interval=BROADCAST_INTERVALS[interval_code])
+        await query.answer("Интервал выбран")
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+        return
+    elif level == "broadcast_duration_menu":
+        data = await state.get_data()
+        sel_interval = data.get('broadcast_interval_code')
+        sel_mode = data.get('broadcast_mode')  # без дефолта
+        builder = InlineKeyboardBuilder()
+        for code, minutes in BROADCAST_DURATIONS.items():
+            label = DURATION_LABELS.get(code, code)
+            if sel_interval and sel_mode:
+                p = get_broadcast_price(sel_interval, code, sel_mode)
+                if p is not None:
+                    label = f"{label} — {p}₽"
+            builder.button(text=label, callback_data=MenuCallback(level="broadcast_duration", option=code).pack())
+        builder.button(text="Назад", callback_data=MenuCallback(level="broadcast").pack())
+        builder.adjust(1)
+        builder = add_contact_button(builder)
+        await query.message.edit_text("Выберите длительность:", reply_markup=builder.as_markup())
+        return
+    elif level == "broadcast_duration":
+        dur_code = callback_data.option
+        if dur_code not in BROADCAST_DURATIONS:
+            await query.answer("Неверная длительность", show_alert=True)
+            return
+        await state.update_data(broadcast_duration_code=dur_code, broadcast_duration=BROADCAST_DURATIONS[dur_code])
+        await query.answer("Длительность выбрана")
+        await process_menu_callback(query, MenuCallback(level="broadcast", user_type='', option='', suboption='', variant='', action=''), state, bot)
+        return
+    elif level == "broadcast_start":
+        data = await state.get_data()
+        if not (data.get('broadcast_mode') and data.get('broadcast_interval') and data.get('broadcast_duration')):
+            await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
+            return
+        await state.set_state(Broadcast.waiting_start_time)
+        await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
+        return
+    elif level == "noop":
+        # Пустышка — ничего не делаем
+        await query.answer()
+        return
+
 @menu_router.message(Broadcast.waiting_check, F.photo)
 async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     photo_id = message.photo[-1].file_id
     order_id = str(uuid.uuid4())
+    # Рассчитываем цену и количество сообщений для модераторов
+    price = get_broadcast_price(data.get('broadcast_interval_code'), data.get('broadcast_duration_code'), data.get('broadcast_mode'))
+    msgs = total_messages(data.get('broadcast_interval_code'), data.get('broadcast_duration_code'), data.get('broadcast_mode'))
     pending_orders[order_id] = {
         'order_type': 'broadcast',
         'user_id': message.from_user.id,
         'user_username': message.from_user.username,
-        'mode': data.get('broadcast_mode','full'),
+        'mode': data.get('broadcast_mode','limited'),
         'interval_minutes': data['broadcast_interval'],
         'interval_code': data['broadcast_interval_code'],
         'duration_code': data['broadcast_duration_code'],
@@ -645,19 +772,27 @@ async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
         'text': data['broadcast_text'],
         'file_ids': data['broadcast_file_ids'],
         'media_group_id': data['broadcast_media_group_id'],
-        'check_photo': photo_id
+        'check_photo': photo_id,
+        'price': price,
+        'messages_total': msgs,
     }
     builder = InlineKeyboardBuilder()
-    from aiogram.utils.keyboard import InlineKeyboardButton
     builder.button(text="Подтвердить", callback_data=AdminCallback(action="confirm", order_id=order_id).pack())
     builder.button(text="Отклонить", callback_data=AdminCallback(action="reject", order_id=order_id).pack())
     builder.adjust(2)
+    # Читаемые подписи
+    interval_h = INTERVAL_LABELS.get(data['broadcast_interval_code'], data['broadcast_interval_code'])
+    duration_h = DURATION_LABELS.get(data['broadcast_duration_code'], data['broadcast_duration_code'])
+    mode_h = "Дневной 09:00–23:00" if (data.get('broadcast_mode') or 'limited') == 'limited' else "24/7"
     caption = (f"Новый заказ (рассылка) #{order_id[:8]}\n"
                f"Пользователь: @{message.from_user.username} ({message.from_user.id})\n"
-               f"Интервал: {data['broadcast_interval_code']} ({data['broadcast_interval']} мин)\n"
-               f"Длительность: {data['broadcast_duration_code']}\n"
+               f"Режим: {mode_h}\n"
+               f"Интервал: {interval_h} ({data['broadcast_interval']} мин)\n"
+               f"Длительность: {duration_h}\n"
                f"Старт: {data['broadcast_start']}\n"
-               f"Окончание: {data['broadcast_end']}\n")
+               f"Окончание: {data['broadcast_end']}\n"
+               f"Цена: {price if price is not None else '—'}₽\n"
+               f"Сообщений: {msgs if msgs is not None else '—'}\n")
     if data['broadcast_file_ids']:
         media = [InputMediaPhoto(media=fid, caption=data['broadcast_text'] if i == 0 else None) for i, fid in enumerate(data['broadcast_file_ids'])]
         await bot.send_media_group(ADMIN_CHAT_ID, media)
@@ -900,11 +1035,12 @@ async def broadcast_waiting_start_time(message: Message, state: FSMContext):
 
 @menu_router.message(Broadcast.waiting_post)
 async def broadcast_waiting_post(message: Message, state: FSMContext, album: List[Message] | None = None):
+    # Поддержка альбома через middleware
     if album:
         content_type = 'photo'
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
         text = next((msg.caption for msg in album if msg.caption), '')
-        media_group_id = 0
+        media_group_id = album[0].media_group_id if album and album[0].media_group_id else 0
     else:
         media_group_id = message.media_group_id or 0
         if message.text:
@@ -918,10 +1054,29 @@ async def broadcast_waiting_post(message: Message, state: FSMContext, album: Lis
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
             return
+
+    # Валидация длины
     max_len = 1024 if file_ids else 4096
     if len(text or '') > max_len:
         await message.reply(f"Слишком длинный текст. Лимит: {max_len} символов. Сейчас: {len(text or '')}.")
         return
-    await state.update_data(broadcast_content_type=content_type, broadcast_text=text, broadcast_file_ids=file_ids, broadcast_media_group_id=media_group_id)
+
+    # Сохраняем контент рассылки и просим чек с суммой
+    await state.update_data(
+        broadcast_content_type=content_type,
+        broadcast_text=text,
+        broadcast_file_ids=file_ids,
+        broadcast_media_group_id=media_group_id
+    )
     await state.set_state(Broadcast.waiting_check)
-    await message.answer("Отправьте фотографию чека оплаты рассылки.")
+
+    data = await state.get_data()
+    price = get_broadcast_price(
+        data.get('broadcast_interval_code'),
+        data.get('broadcast_duration_code'),
+        data.get('broadcast_mode')
+    )
+    if price is not None:
+        await message.answer(f"Отправьте фотографию чека оплаты на сумму {price}₽.")
+    else:
+        await message.answer("Отправьте фотографию чека оплаты рассылки.")
