@@ -1063,6 +1063,12 @@ async def broadcast_waiting_post(message: Message, state: FSMContext, album: Lis
         data.get('broadcast_mode')
     )
     if price is not None:
-        await message.answer(f"Отправьте фотографию чека оплаты на сумму {price}₽.")
+        await message.answer(f"Отправьте фотографию чека оплаты на сумму {price}₽.\n\n"
+                            f"Реквизиты для оплаты:\n"
+                            f"Сбербанк:\n"
+                            f"Даниил Дмитриевич М.\n"
+                            f"2202206250331753\n"
+                            f"Можно по номеру:\n"
+                            f"89164253032")
     else:
         await message.answer("Отправьте фотографию чека оплаты рассылки.")
