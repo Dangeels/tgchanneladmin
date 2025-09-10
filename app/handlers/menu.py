@@ -729,7 +729,7 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
             await query.answer("Заполните сначала режим, интервал и длительность", show_alert=True)
             return
         await state.set_state(Broadcast.waiting_start_time)
-        await query.message.edit_text("Отправьте время старта в формате HH:MM DD-MM-YYYY или /now")
+        await query.message.edit_text("Если хотите настроить начало рассылки на определённое время, отправьте время старта в формате HH:MM DD-MM-YYYY\nОтправьте /now, если хотите, чтобы рассылка началась сразу.")
         return
     elif level == "noop":
         # Пустышка — ничего не делаем
