@@ -13,6 +13,27 @@ from app.utils.scheduler import update_unpin_or_delete_task
 router = Router()
 
 
+def extract_entities(message: Message):
+    def entity_to_dict(e):
+        result = {'type': e.type, 'offset': e.offset, 'length': e.length}
+        if getattr(e, 'url', None):
+            result['url'] = e.url
+        if getattr(e, 'user', None):
+            # сохраняем только id пользователя для text_mention
+            result['user'] = {'id': e.user.id}
+        if getattr(e, 'language', None):
+            result['language'] = e.language
+        if getattr(e, 'custom_emoji_id', None):
+            result['custom_emoji_id'] = e.custom_emoji_id
+        return result
+
+    if getattr(message, 'entities', None):
+        return [entity_to_dict(e) for e in message.entities]
+    elif getattr(message, 'caption_entities', None):
+        return [entity_to_dict(e) for e in message.caption_entities]
+    return []
+
+
 @router.message(Command("help"))
 async def help_command(message: Message):
     x = await is_admin(message.from_user.username)
@@ -208,7 +229,10 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
         # Обработка медиа-группы (альбома)
         content_type = 'photo'
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
-        text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
+        # Caption и entities берём из первого сообщения с подписью
+        cap_msg = next((msg for msg in album if msg.caption), None)
+        text = cap_msg.caption if cap_msg else ''
+        entities = extract_entities(cap_msg) if cap_msg else []
         media_group_id = album[0].media_group_id
         # Валидация длины текста
         max_len = 1024 if file_ids else 4096
@@ -218,7 +242,8 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
                 f"Сейчас: {len(text or '')} символов. Отправьте контент заново."
             )
             return
-        await req.add_or_update_pending_post(content_type, text, file_ids, int(media_group_id))
+        # передаём entities позиционно для статической проверки
+        await req.add_or_update_pending_post(content_type, text, file_ids, int(media_group_id), None, entities)
     else:
         # Одиночное сообщение
         media_group_id = message.media_group_id or 0
@@ -226,10 +251,12 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
             content_type = 'text'
             text = message.text
             file_ids = []
+            entities = extract_entities(message)
         elif message.photo:
             content_type = 'photo'
             text = message.caption or ''
             file_ids = [message.photo[-1].file_id]
+            entities = extract_entities(message)
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
             return
@@ -243,7 +270,7 @@ async def second_store_pending_post(message: Message, state: FSMContext, album: 
             )
             return
 
-        await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id)
+        await req.add_or_update_pending_post(content_type, text, file_ids, media_group_id, None, entities)
 
     await message.answer("Пост получен и сохранён.")
     await state.clear()
@@ -270,7 +297,9 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
         # Обработка медиа-группы
         content_type = 'photo'
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
-        text = next((msg.caption for msg in album if msg.caption), '')  # Caption от первого с текстом
+        cap_msg = next((msg for msg in album if msg.caption), None)
+        text = cap_msg.caption if cap_msg else ''  # Caption от первого с текстом
+        entities = extract_entities(cap_msg) if cap_msg else []
         media_group_id = album[0].media_group_id
         # Валидация длины текста
         max_len = 1024 if file_ids else 4096
@@ -284,7 +313,8 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
             content_type=content_type,
             text=text,
             photo_file_ids=file_ids,
-            media_group_id=media_group_id
+            media_group_id=media_group_id,
+            entities=entities
         )
     else:
         # Одиночное сообщение
@@ -293,10 +323,12 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
             content_type = 'text'
             text = message.text
             file_ids = []
+            entities = extract_entities(message)
         elif message.photo:
             content_type = 'photo'
             text = message.caption or ''
             file_ids = [message.photo[-1].file_id]
+            entities = extract_entities(message)
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
             return
@@ -314,7 +346,8 @@ async def get_content(message: Message, state: FSMContext, album: list[Message] 
             content_type=content_type,
             text=text,
             photo_file_ids=file_ids,
-            media_group_id=media_group_id
+            media_group_id=media_group_id,
+            entities=entities
         )
 
     await message.answer(
@@ -377,6 +410,7 @@ async def get_delete_time(message: Message, state: FSMContext):
                 await message.reply("Время удаления поста должно быть позже времени публикации.")
                 return
 
+        # entities передаём позиционно (последним аргументом)
         await req.add_or_update_scheduled_post(
             data['content_type'],
             data['text'],
@@ -384,7 +418,8 @@ async def get_delete_time(message: Message, state: FSMContext):
             data['scheduled_time_moscow'],
             data['media_group_id'],
             unpin_time=data['unpin_time'],
-            delete_time=delete_time
+            delete_time=delete_time,
+            entities=data.get('entities')
         )
         await message.answer("Пост успешно запланирован.")
     except ValueError:

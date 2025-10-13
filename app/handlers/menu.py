@@ -32,6 +32,25 @@ def add_contact_button(builder: InlineKeyboardBuilder) -> InlineKeyboardBuilder:
     builder.row(InlineKeyboardButton(text='Связаться с админом', url=ADMIN_CONTACT_URL))
     return builder
 
+# NEW: helper для извлечения entities из сообщения
+def extract_entities(msg: Message) -> list:
+    def entity_to_dict(e):
+        d = {'type': e.type, 'offset': e.offset, 'length': e.length}
+        if getattr(e, 'url', None):
+            d['url'] = e.url
+        if getattr(e, 'user', None):
+            d['user'] = {'id': e.user.id}
+        if getattr(e, 'language', None):
+            d['language'] = e.language
+        if getattr(e, 'custom_emoji_id', None):
+            d['custom_emoji_id'] = e.custom_emoji_id
+        return d
+    if getattr(msg, 'entities', None):
+        return [entity_to_dict(e) for e in msg.entities]
+    if getattr(msg, 'caption_entities', None):
+        return [entity_to_dict(e) for e in msg.caption_entities]
+    return []
+
 # Global storage for pending orders
 pending_orders: Dict[str, Dict] = {}
 
@@ -773,6 +792,7 @@ async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
         'text': data['broadcast_text'],
         'file_ids': data['broadcast_file_ids'],
         'media_group_id': data['broadcast_media_group_id'],
+        'entities': data.get('broadcast_entities', []),  # NEW: entities
         'check_photo': photo_id,
         'price': price,
         'messages_total': msgs,
@@ -794,11 +814,15 @@ async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
                f"Окончание: {data['broadcast_end']}\n"
                f"Цена: {price if price is not None else '—'}₽\n"
                f"Сообщений: {msgs if msgs is not None else '—'}\n")
+    # Отправляем контент поста для модерации (с форматированием)
     if data['broadcast_file_ids']:
         media = [InputMediaPhoto(media=fid, caption=data['broadcast_text'] if i == 0 else None) for i, fid in enumerate(data['broadcast_file_ids'])]
+        if data['broadcast_text']:
+            # caption_entities поддерживаются только для первого элемента
+            media[0].caption_entities = data.get('broadcast_entities') or None
         await bot.send_media_group(ADMIN_CHAT_ID, media)
     else:
-        await bot.send_message(ADMIN_CHAT_ID, data['broadcast_text'] or '(без текста)')
+        await bot.send_message(ADMIN_CHAT_ID, data['broadcast_text'] or '(без текста)', entities=data.get('broadcast_entities') or None)
     await bot.send_photo(ADMIN_CHAT_ID, photo=photo_id, caption=caption, reply_markup=builder.as_markup())
     await message.answer("Заказ на рассылку отправлен на модерацию.")
     await state.clear()
@@ -834,7 +858,8 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
             end_time=data['broadcast_end'],
             interval_minutes=data['interval_minutes'],
             chat_id=free_chat,
-            mode=data.get('mode','full')
+            mode=data.get('mode','full'),
+            entities=data.get('entities') or []
         )
         try:
             await query.message.edit_caption(caption=(query.message.caption + "\n\nСтатус: Подтверждено"), reply_markup=None)
@@ -950,7 +975,8 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
                     media_group_id=order['media_group_id'] or 0,
                     unpin_time=unpin_time.replace(tzinfo=None) if unpin_time else None,
                     delete_time=delete_time.replace(tzinfo=None) if delete_time else None,
-                    chat_id=int(chat_id)
+                    chat_id=int(chat_id),
+                    entities=order.get('entities') or []
                 )
 
                 # Поднятия: дублируем пост boost_count раз, каждые +2 часа, с закрепом на 2 часа
@@ -965,7 +991,8 @@ async def process_admin_callback(query: CallbackQuery, callback_data: AdminCallb
                         media_group_id=order['media_group_id'] or 0,
                         unpin_time=unpin_boost,
                         delete_time=delete_time.replace(tzinfo=None) if delete_time else None,
-                        chat_id=int(chat_id)
+                        chat_id=int(chat_id),
+                        entities=order.get('entities') or []
                     )
 
             # Уведомление пользователю с кнопкой контакта
@@ -1043,18 +1070,22 @@ async def broadcast_waiting_post(message: Message, state: FSMContext, album: Lis
     if album:
         content_type = 'photo'
         file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
-        text = next((msg.caption for msg in album if msg.caption), '')
+        cap_msg = next((msg for msg in album if msg.caption), None)
+        text = cap_msg.caption if cap_msg else ''
         media_group_id = album[0].media_group_id if album and album[0].media_group_id else 0
+        entities = extract_entities(cap_msg) if cap_msg else []
     else:
         media_group_id = message.media_group_id or 0
         if message.text:
             content_type = 'text'
             text = message.text
             file_ids = []
+            entities = extract_entities(message)
         elif message.photo:
             content_type = 'photo'
             text = message.caption or ''
             file_ids = [message.photo[-1].file_id]
+            entities = extract_entities(message)
         else:
             await message.answer("Пожалуйста, отправьте текст или фото.")
             return
@@ -1070,7 +1101,8 @@ async def broadcast_waiting_post(message: Message, state: FSMContext, album: Lis
         broadcast_content_type=content_type,
         broadcast_text=text,
         broadcast_file_ids=file_ids,
-        broadcast_media_group_id=media_group_id
+        broadcast_media_group_id=media_group_id,
+        broadcast_entities=entities
     )
     await state.set_state(Broadcast.waiting_check)
 

@@ -42,13 +42,14 @@ async def delete_last_messages():
         await session.commit()
 
 
-async def add_or_update_pending_post(content_type: str, text: str, photo_file_ids: list[str], media_group_id: int = 0, chat_id: int | None = None):
+async def add_or_update_pending_post(content_type: str, text: str, photo_file_ids: list[str], media_group_id: int = 0, chat_id: int | None = None, entities: list | None = None):
     post = PendingPost(
         content_type=content_type,
         text=text,
         photo_file_ids=photo_file_ids,
         media_group_id=media_group_id if media_group_id else 0,
-        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0))
+        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0)),
+        entities=entities or []
     )
 
     async with async_session() as session:
@@ -66,6 +67,8 @@ async def add_or_update_pending_post(content_type: str, text: str, photo_file_id
                 existing.text = text or existing.text  # Сохраняем caption, если новый
                 if chat_id:
                     existing.chat_id = chat_id
+                if entities is not None:
+                    existing.entities = entities
                 session.add(existing)
             else:
                 session.add(post)
@@ -99,7 +102,8 @@ async def add_or_update_scheduled_post(
     unpin_time: datetime | None = None,
     delete_time: datetime | None = None,
     post_id: int = 0,
-    chat_id: int | None = None
+    chat_id: int | None = None,
+    entities: list | None = None
 ):
     if message_ids is None:
         message_ids = []
@@ -115,7 +119,8 @@ async def add_or_update_scheduled_post(
         message_ids=message_ids.copy(),
         unpin_time=unpin_time,
         delete_time=delete_time,
-        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0))
+        chat_id=chat_id or int(os.getenv('MAIN_CHAT_ID', 0)),
+        entities=entities or []
     )
 
     async with async_session() as session:
@@ -145,6 +150,8 @@ async def add_or_update_scheduled_post(
                 existing.unpin_time = unpin_time or existing.unpin_time
                 existing.delete_time = delete_time or existing.delete_time
                 existing.chat_id = chat_id or existing.chat_id
+                if entities is not None:
+                    existing.entities = entities
 
                 session.add(existing)
             else:
@@ -186,7 +193,8 @@ async def add_broadcast_post(
     chat_id: int,
     mode: str = 'full',
     active_start_min: int | None = None,
-    active_end_min: int | None = None
+    active_end_min: int | None = None,
+    entities: list | None = None
 ):
     if not photo_file_ids:
         photo_file_ids = []
@@ -222,7 +230,8 @@ async def add_broadcast_post(
         is_active=True,
         mode=mode,
         active_start_min=active_start_min if active_start_min is not None else 9*60,
-        active_end_min=active_end_min if active_end_min is not None else 23*60
+        active_end_min=active_end_min if active_end_min is not None else 23*60,
+        entities=entities or []
     )
     async with async_session() as session:
         async with session.begin():

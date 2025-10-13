@@ -7,7 +7,7 @@ import random
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
 from aiogram.exceptions import TelegramBadRequest  # NEW
-from app.database.requests import get_pending_posts, delete_pending_post, get_scheduled_posts, delete_scheduled_post, get_active_broadcast_posts, update_broadcast_run
+from app.database.requests import get_pending_posts, delete_pending_post, get_scheduled_posts, delete_scheduled_post
 import app.database.requests as req
 import pytz
 from app.database.models import ScheduledPost, PendingPost
@@ -52,7 +52,7 @@ async def handle_missed_tasks(bot: Bot, channel_id: int | str, scheduler):
             await update_unpin_or_delete_task(bot, channel_id, scheduler)  # Ваша функция для добавления jobs
 
 
-def make_aware(dt: datetime, tz: pytz.timezone) -> datetime | None:
+def make_aware(dt: datetime, tz) -> datetime | None:
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -61,10 +61,11 @@ def make_aware(dt: datetime, tz: pytz.timezone) -> datetime | None:
         return dt.astimezone(tz)
 
 
-async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost, notification: bool = False):
+async def post_content(bot: Bot, chat_id: int, post, notification: bool = False):
     # Если это уведомление — всегда шлём в указанный chat_id, иначе используем chat_id поста
     target_chat = chat_id if notification else (getattr(post, 'chat_id', None) or chat_id)
     text = str(getattr(post, 'text', '') or '')
+    entities = getattr(post, 'entities', None) or []  # НОВОЕ: используем сохранённые entities
     # NEW: Проверка лимитов до отправки; если нарушены — не публикуем
     try:
         if post.content_type == 'text':
@@ -75,7 +76,7 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
                 if notif_chat and not notification:
                     await bot.send_message(int(notif_chat), f"Пост id={getattr(post, 'id', None)} не опубликован: превышен лимит 4096 символов.")
                 return
-            msg = await bot.send_message(target_chat, text)
+            msg = await bot.send_message(target_chat, text, entities=entities or None)
 
         elif post.content_type == 'photo' and post.photo_file_ids:
             if len(text) > 1024:
@@ -85,11 +86,12 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
                     await bot.send_message(int(notif_chat), f"Пост id={getattr(post, 'id', None)} не опубликован: превышен лимит 1024 символов для подписи.")
                 return
             if len(post.photo_file_ids) == 1:
-                msg = await bot.send_photo(target_chat, post.photo_file_ids[0], caption=text or None)
+                msg = await bot.send_photo(target_chat, post.photo_file_ids[0], caption=text or None, caption_entities=entities or None)
             else:
                 media = [InputMediaPhoto(media=file_id) for file_id in post.photo_file_ids]
                 if text:
                     media[0].caption = text  # Caption только для первого
+                    media[0].caption_entities = entities or None
                 msg = await bot.send_media_group(target_chat, media)
         else:
             raise ValueError("Неверный тип контента")
@@ -109,7 +111,7 @@ async def post_content(bot: Bot, chat_id: int, post: ScheduledPost | PendingPost
 
     if not notification:
         m = [msg] if type(msg) is not list else msg
-        if post.chat_id == int(os.getenv('MAIN_CHAT_ID')):
+        if getattr(post, 'chat_id', None) == int(os.getenv('MAIN_CHAT_ID')):
             await req.add_last_message_time(datetime.now())
         if isinstance(post, ScheduledPost):
             await req.add_or_update_scheduled_post(
@@ -368,6 +370,7 @@ async def broadcast_task(bot: Bot, scheduler):
                 tmp.photo_file_ids = bp.photo_file_ids or []
                 tmp.chat_id = bp.chat_id
                 tmp.id = f"broadcast:{bp.id}"
+                tmp.entities = getattr(bp, 'entities', [])  # НОВОЕ: передаём entities
 
                 try:
                     await post_content(bot, bp.chat_id, tmp)

@@ -25,6 +25,8 @@ class PendingPost(Base):
     media_group_id: Mapped[int] = mapped_column()
     # Новое: целевой чат для публикации
     chat_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Новое: entities для форматирования
+    entities = mapped_column(JSON, default=list)
 
 
 class ScheduledPost(Base):
@@ -41,6 +43,8 @@ class ScheduledPost(Base):
     delete_time = mapped_column(DateTime, default=None, nullable=True)
     # Новое: целевой чат для публикации
     chat_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Новое: entities для форматирования
+    entities = mapped_column(JSON, default=list)
 
 
 class PostIsPinned(Base):
@@ -75,6 +79,8 @@ class BroadcastPost(Base):
     # NEW: окно активности (минуты от полуночи локального времени), используется если mode == 'limited'
     active_start_min: Mapped[int] = mapped_column(Integer, default=9*60)  # 09:00
     active_end_min: Mapped[int] = mapped_column(Integer, default=23*60)    # 23:00
+    # NEW: entities для форматирования
+    entities = mapped_column(JSON, default=list)
 
 
 class BroadcastConfig(Base):
@@ -96,6 +102,8 @@ async def async_main():
                 cols = [row[1] for row in res.fetchall()]  # 1-й индекс = имя колонки
                 if 'chat_id' not in cols:
                     await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN chat_id BIGINT DEFAULT 0")
+                if 'entities' not in cols:
+                    await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN entities JSON DEFAULT '[]'")
         except Exception:
             # Игнорируем, если БД не SQLite или столбец уже есть
             pass
@@ -115,6 +123,7 @@ async def async_main():
                 'mode': "ALTER TABLE broadcast_posts ADD COLUMN mode VARCHAR(16) DEFAULT 'full'",
                 'active_start_min': "ALTER TABLE broadcast_posts ADD COLUMN active_start_min INTEGER DEFAULT 540",
                 'active_end_min': "ALTER TABLE broadcast_posts ADD COLUMN active_end_min INTEGER DEFAULT 1380",
+                'entities': "ALTER TABLE broadcast_posts ADD COLUMN entities JSON DEFAULT '[]'",
             }
             for col, sql in alter_map.items():
                 if col not in cols:
