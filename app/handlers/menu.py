@@ -661,6 +661,18 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
         mode_line = (
             "Дневной 09:00–23:00" if sel_mode == 'limited' else ("Круглосуточно 24/7 (+50% к цене)" if sel_mode == 'full' else "не выбран")
         )
+        missing = []
+        if not sel_mode:
+            missing.append('режим')
+        if not sel_interval:
+            missing.append('интервал')
+        if not sel_duration:
+            missing.append('длительность')
+        if missing:
+            readiness_line = f"⚠️ Чтобы перейти дальше, выберите: {', '.join(missing)}."
+        else:
+            readiness_line = "✅ Все параметры выбраны — можно продолжить."
+
         txt = [
             'Настройка рассылки в бесплатный чат:',
             f"Режим: {mode_line}",
@@ -668,6 +680,8 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
             f"Длительность: {sel_duration_text}",
             price_line,
             count_line,
+            '',
+            readiness_line,
             '',
             'Как это работает: пост публикуется по выбранному интервалу в бесплатный чат в течение указанного срока.',
             'По умолчанию — дневной режим 09:00–23:00 (ночью публикации не идут). Можно включить 24/7 (+50% к цене).'
@@ -773,6 +787,18 @@ async def process_menu_callback(query: CallbackQuery, callback_data: MenuCallbac
 async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     photo_id = message.photo[-1].file_id
+
+    # Убираем кнопку "Отмена" у сообщения с реквизитами
+    waiting_msg_id = data.get('waiting_msg_id')
+    if waiting_msg_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=message.from_user.id,
+                message_id=waiting_msg_id,
+                reply_markup=None
+            )
+        except Exception:
+            pass
     order_id = str(uuid.uuid4())
     # Рассчитываем цену и количество сообщений для модераторов
     price = get_broadcast_price(data.get('broadcast_interval_code'), data.get('broadcast_duration_code'), data.get('broadcast_mode'))
@@ -824,7 +850,9 @@ async def broadcast_get_check(message: Message, state: FSMContext, bot: Bot):
     else:
         await bot.send_message(ADMIN_CHAT_ID, data['broadcast_text'] or '(без текста)', entities=data.get('broadcast_entities') or None)
     await bot.send_photo(ADMIN_CHAT_ID, photo=photo_id, caption=caption, reply_markup=builder.as_markup())
-    await message.answer("Заказ на рассылку отправлен на модерацию.")
+    contact_builder = InlineKeyboardBuilder()
+    contact_builder = add_contact_button(contact_builder)
+    await message.answer("Заказ на рассылку отправлен на модерацию.", reply_markup=contact_builder.as_markup())
     await state.clear()
 
 @menu_router.message(Broadcast.waiting_check)
@@ -1032,11 +1060,126 @@ async def process_rejection_reason(message: Message, state: FSMContext, bot: Bot
     await state.clear()
 
 
+# Обработчик фото чека для обычной публикации
+@menu_router.message(Purchase.waiting_check, F.photo)
+async def purchase_get_check(message: Message, state: FSMContext, bot: Bot):
+    photo_id = message.photo[-1].file_id
+    data = await state.get_data()
+
+    # Убираем кнопку "Отмена" у сообщения с реквизитами
+    waiting_msg_id = data.get('waiting_msg_id')
+    if waiting_msg_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=message.from_user.id,
+                message_id=waiting_msg_id,
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
+    await state.update_data(check_photo=photo_id)
+    await state.set_state(Purchase.waiting_post)
+
+    # Сообщение с кнопкой "Связаться с админом"
+    contact_builder = InlineKeyboardBuilder()
+    contact_builder = add_contact_button(contact_builder)
+    sent = await message.answer(
+        "Чек получен! Теперь отправьте текст вашего поста (или фото с подписью).",
+        reply_markup=contact_builder.as_markup()
+    )
+    await state.update_data(waiting_msg_id=sent.message_id)
+
+
 # Fallback for wrong input in states
 @menu_router.message(Purchase.waiting_check)
 async def invalid_check(message: Message):
     kb = InlineKeyboardBuilder(); kb = add_contact_button(kb)
     await message.answer("Пожалуйста, отправьте фотографию чека.", reply_markup=kb.as_markup())
+
+
+# Обработчик поста для обычной публикации (текст или фото)
+@menu_router.message(Purchase.waiting_post, F.photo | F.text)
+async def purchase_get_post(message: Message, state: FSMContext, bot: Bot, album: list | None = None):
+    data = await state.get_data()
+
+    if album:
+        content_type = 'photo'
+        file_ids = [msg.photo[-1].file_id for msg in album if msg.photo]
+        cap_msg = next((msg for msg in album if msg.caption), None)
+        text = cap_msg.caption if cap_msg else ''
+        media_group_id = album[0].media_group_id if album and album[0].media_group_id else 0
+        entities = extract_entities(cap_msg) if cap_msg else []
+    elif message.photo:
+        content_type = 'photo'
+        text = message.caption or ''
+        file_ids = [message.photo[-1].file_id]
+        media_group_id = message.media_group_id or 0
+        entities = extract_entities(message)
+    else:
+        content_type = 'text'
+        text = message.text or ''
+        file_ids = []
+        media_group_id = 0
+        entities = extract_entities(message)
+
+    max_len = 1024 if file_ids else 4096
+    if len(text) > max_len:
+        await message.reply(f"Слишком длинный текст. Лимит: {max_len} символов. Сейчас: {len(text)}.")
+        return
+
+    order_id = str(uuid.uuid4())
+    total = data.get('total', 0)
+    user_type = data.get('user_type', '')
+    option = data.get('option', '')
+    selected = data.get('selected_suboptions', {})
+    check_photo = data.get('check_photo')
+
+    pending_orders[order_id] = {
+        'user_id': message.from_user.id,
+        'user_username': message.from_user.username,
+        'user_type': user_type,
+        'option': option,
+        'selected_suboptions': selected,
+        'content_type': content_type,
+        'text': text,
+        'file_ids': file_ids,
+        'media_group_id': media_group_id,
+        'entities': entities,
+        'check_photo': check_photo,
+        'total': total,
+    }
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Подтвердить", callback_data=AdminCallback(action="confirm", order_id=order_id).pack())
+    builder.button(text="Отклонить", callback_data=AdminCallback(action="reject", order_id=order_id).pack())
+    builder.adjust(2)
+
+    caption = (
+        f"Новый заказ (публикация) #{order_id[:8]}\n"
+        f"Пользователь: @{message.from_user.username} ({message.from_user.id})\n"
+        f"Тип: {user_type}, опция: {option}\n"
+        f"Доп. опции: {selected}\n"
+        f"Цена: {total}₽\n"
+    )
+
+    # Отправляем контент поста для модерации
+    if file_ids:
+        media = [InputMediaPhoto(media=fid, caption=text if i == 0 else None) for i, fid in enumerate(file_ids)]
+        if text and entities:
+            media[0].caption_entities = entities or None
+        await bot.send_media_group(ADMIN_CHAT_ID, media)
+    else:
+        await bot.send_message(ADMIN_CHAT_ID, text or '(без текста)', entities=entities or None)
+
+    # Отправляем чек с кнопками подтверждения/отклонения
+    if check_photo:
+        await bot.send_photo(ADMIN_CHAT_ID, photo=check_photo, caption=caption, reply_markup=builder.as_markup())
+    else:
+        await bot.send_message(ADMIN_CHAT_ID, caption, reply_markup=builder.as_markup())
+
+    await message.answer("Ваш заказ отправлен на модерацию!")
+    await state.clear()
 
 @menu_router.message(Purchase.waiting_post)
 async def invalid_post(message: Message):
