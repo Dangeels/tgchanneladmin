@@ -25,7 +25,7 @@ LINKS = {
     'reviews': 'https://t.me/PUSHfeedback',
 }
 
-ADMIN_CONTACT_URL = 'https://t.me/push_admin_Evgen'
+ADMIN_CONTACT_URL = 'https://t.me/Darina_push'
 
 # Утилита: добавить кнопку «Связаться с админом» в самый низ клавиатуры
 def add_contact_button(builder: InlineKeyboardBuilder) -> InlineKeyboardBuilder:
